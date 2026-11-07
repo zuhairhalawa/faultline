@@ -185,7 +185,7 @@
         <button class="btn" data-cmd-flood>Flood</button>
       </div>
       <div class="row"><span>Sensor replies 30 ms late for 1 s</span><button class="btn" data-cmd="slow 30 1000">Slow down</button></div>
-      <div class="row"><span>Sensor stuck on one value for 0.6 s</span><button class="btn" data-cmd="stuck 600">Stick</button></div>
+      <div class="row"><span>Sensor stuck on one value for 600 ms</span><button class="btn" data-cmd="stuck 600">Stick</button></div>
       <p class="hint">The controller runs at priority 40 on every CPU's schedule.</p>
     </section>
 
@@ -294,6 +294,15 @@ function evLabel(e) {
   if (kind === 'ready') return `<b>${e.proc} back in service ${(e.arg / 1000).toFixed(2)} ms after the fault</b>`;
   return escapeHtml(e.text);
 }
+function shortLabel(text) {
+  const t = text.replace(/^inject /, '');
+  let m;
+  if ((m = t.match(/^hang (\S+)/))) return `freeze ${m[1]}`;
+  if ((m = t.match(/^flood prio (\d+)/))) return `CPU flood, priority ${m[1]}`;
+  if ((m = t.match(/^slow sensor replies \+(\d+) ms/))) return `sensor slowed +${m[1]} ms`;
+  if (/^stuck sensor/.test(t)) return 'sensor stuck';
+  return t;
+}
 function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
 function onEvent(e, live) {
@@ -308,7 +317,7 @@ function onEvent(e, live) {
   list.prepend(div);
   while (list.children.length > 120) list.lastChild.remove();
 
-  if (kind === 'inject') marks.push({ t: e.t_ms, label: e.text.replace(/^inject /, ''), kind: 'inject' });
+  if (kind === 'inject') marks.push({ t: e.t_ms, label: shortLabel(e.text), kind: 'inject' });
   if (kind === 'ready') marks.push({ t: e.t_ms, label: `back ${(e.arg / 1000).toFixed(1)} ms`, kind: 'ready' });
   if (kind === 'alarm') marks.push({ t: e.t_ms, label: 'safe stop', kind: 'alarm' });
   if (kind === 'late') marks.push({ t: e.t_ms, label: `${(e.arg / 1000).toFixed(0)} ms late`, kind: 'late' });
@@ -360,18 +369,21 @@ function draw() {
   // fault marks stamped on the trace
   g.font = '600 14px Bahnschrift, sans-serif';
   const colors = { inject: '#e8c46a', ready: '#7fd8c9', alarm: '#ff7b81', late: '#ff9ea3' };
-  let row = 0, lastX = -999;
+  const rowEnd = [-1, -1, -1, -1, -1];   // right edge of the last label in each row
   for (const m of marks) {
     if (m.t < now - WINDOW_MS) continue;
     const x = sweepX(m.t, w);
     const sameSweep = Math.floor(m.t / WINDOW_MS) === Math.floor(now / WINDOW_MS);
     if (!sameSweep && x <= head + gap) continue;
-    row = Math.abs(x - lastX) < 120 ? row + 1 : 0; lastX = x;
+    const lw2 = g.measureText(m.label).width;
+    const lx = Math.min(x + 5, w - lw2 - 4);
+    let row = rowEnd.findIndex((end) => lx > end + 10);
+    if (row < 0) row = rowEnd.length - 1;
+    rowEnd[row] = lx + lw2;
     g.strokeStyle = colors[m.kind]; g.lineWidth = m.kind === 'inject' ? 1.5 : 1;
     if (m.kind === 'inject') { g.beginPath(); g.moveTo(x, 8); g.lineTo(x, h); g.stroke(); }
     g.fillStyle = colors[m.kind];
-    const ty = 22 + (row % 4) * 18;
-    g.fillText(m.label, Math.min(x + 5, w - g.measureText(m.label).width - 4), ty);
+    g.fillText(m.label, lx, 22 + row * 18);
   }
 
   // lateness strip
@@ -430,7 +442,10 @@ $('run-camp').onclick = async () => {
 document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = () => inject(b.dataset.cmd));
 document.querySelector('[data-cmd-flood]').onclick = () => inject(`flood ${$('flood-prio').value} 80`);
 
+let wasConnected = null;
 function setLink(on, target) {
+  if (on && wasConnected === false) { location.reload(); return; }   /* target restarted: start fresh */
+  wasConnected = on;
   $('link').innerHTML = `<span class="dot ${on ? 'on' : ''}"></span>${on ? `Live from QNX target ${target}` : `Not connected to ${target}. Is the QNX target running?`}`;
 }
 

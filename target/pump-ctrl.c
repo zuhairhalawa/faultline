@@ -160,7 +160,8 @@ int main(void)
     double prev_value = -1;
     uint32_t used_seq = 0;
     int same_count = 0;
-    int was_late = 0;
+    int late_run = 0;          /* consecutive late ticks */
+    int64_t late_worst = 0;    /* worst lateness in the current run */
     uint64_t start = fl_now_ns();
     uint64_t last = start;
     uint64_t tick = 0;
@@ -187,13 +188,17 @@ int main(void)
         }
         if (late > FL_LATE_LIMIT_NS) {
             s->ctrl_late++;
-            if (!was_late) {
-                fl_event(s, FL_EV_DEADLINE_MISS, me, getpid(), (int)(late / 1000),
-                         "control tick %.1f ms late", late / 1e6);
+            late_run++;
+            if (late > late_worst) {
+                late_worst = late;
             }
-            was_late = 1;
-        } else {
-            was_late = 0;
+        } else if (late_run) {
+            /* A run of late ticks just ended: log it once, with its worst tick. */
+            fl_event(s, FL_EV_DEADLINE_MISS, me, getpid(), (int)(late_worst / 1000),
+                     "%d control tick%s late, worst %.1f ms", late_run, late_run == 1 ? "" : "s",
+                     late_worst / 1e6);
+            late_run = 0;
+            late_worst = 0;
         }
         if (late > 5 * FL_CTRL_PERIOD_NS) {
             start = now - tick * FL_CTRL_PERIOD_NS;   /* resync after a long stall */

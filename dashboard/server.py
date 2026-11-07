@@ -47,8 +47,13 @@ class Target:
                 s = socket.create_connection((self.host, self.port), timeout=5)
                 s.settimeout(None)
                 with self.lock:
+                    # A new connection usually means Faultline was restarted on the target,
+                    # which restarts event numbering. Start clean; the bridge replays history.
                     self.sock = s
                     self.connected = True
+                    self.events.clear()
+                    self.history.clear()
+                    self.state = None
                 self._publish({"kind": "link", "connected": True, "target": self.host})
                 buf = b""
                 while True:

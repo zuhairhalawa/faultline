@@ -5,6 +5,8 @@
 #   tools/vm.sh stop
 #   tools/vm.sh ssh CMD   run a command on the target as root
 #   tools/vm.sh deploy    copy the built programs and config to /data/fl on the target
+#   tools/vm.sh run       start Faultline on the target (restarts it if running)
+#   tools/vm.sh halt      stop Faultline on the target
 set -uo pipefail
 source "$HOME/qnx800/qnxsdp-env.sh" > /dev/null
 export COLUMNS=120 MKQNXIMAGE_NOPROMPT=1
@@ -36,12 +38,22 @@ start)
 ip) vm_ip ;;
 stop) mkqnximage --stop; rm -f "$VM/.ip" ;;
 ssh) shift; ssh "${SSHOPTS[@]}" "root@$(vm_ip)" "$@" ;;
+halt)
+    # Stop Faultline on the target. The supervisor goes first, or it would restart the rest.
+    ssh "${SSHOPTS[@]}" "root@$(vm_ip)" 'slay -f fl-supervisor >/dev/null 2>&1; sleep 0.3; slay -f fl-plant flow-sensor motor-drv pump-ctrl fl-inject fl-bridge >/dev/null 2>&1; sleep 0.5; rm -f /dev/shmem/fl-state'
+    ;;
+run)
+    # Start Faultline on the target (stopping any running copy first).
+    "$0" halt
+    ssh "${SSHOPTS[@]}" "root@$(vm_ip)" 'cd /data/fl && (nohup bin/fl-supervisor /data/fl/system.conf /data/fl/bin > /tmp/fl.log 2>&1 &); sleep 1.5; cat /tmp/fl.log'
+    ;;
 deploy)
     ip=$(vm_ip)
+    "$0" halt
     ssh "${SSHOPTS[@]}" "root@$ip" 'mkdir -p /data/fl/bin' &&
     scp "${SSHOPTS[@]}" -q "$BUILD"/build/x86_64/* "root@$ip:/data/fl/bin/" &&
     scp "${SSHOPTS[@]}" -q "$BUILD/system.conf" "root@$ip:/data/fl/" &&
     echo "DEPLOYED to $ip:/data/fl"
     ;;
-*) echo "usage: vm.sh start|ip|stop|ssh CMD|deploy"; exit 2 ;;
+*) echo "usage: vm.sh start|stop|ip|deploy|run|halt|ssh CMD"; exit 2 ;;
 esac

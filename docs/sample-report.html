@@ -1,0 +1,21 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Faultline report: Infusion pump, single faults</title>
+<style>
+body{font:15px/1.5 "Segoe UI",system-ui,sans-serif;color:#14202b;background:#eef1f3;margin:0;padding:32px}
+main{max-width:1180px;margin:auto;background:#fff;border:1px solid #d5dbe0;padding:28px 32px}
+h1{font-size:24px;margin:0 0 4px} .meta{color:#4c5a66;margin:0 0 18px}
+.overall{display:inline-block;font-weight:700;padding:4px 10px;border-radius:4px;color:#fff;background:#0e7c66}
+table{border-collapse:collapse;width:100%;margin-top:18px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #e3e7ea;vertical-align:top}
+th{font-size:13px;color:#4c5a66;font-weight:600}
+code{font:13px Consolas,monospace;background:#f1f4f6;padding:1px 4px}
+td.v{font-weight:700} tr.pass td.v,tr.caught td.v{color:#0e7c66} tr.fail td.v,tr.missed td.v,tr.error td.v{color:#c2272d}
+td.why{color:#4c5a66;font-size:13px} .note{color:#4c5a66;font-size:13px;margin-top:22px}
+</style></head><body><main>
+<h1>Faultline report: Infusion pump, single faults</h1>
+<p class="meta">Run 2026-11-08 03:40 on target 192.168.122.80. Simulated infusion pump at 120 mL/h: sensor, motor driver and 100 Hz controller as separate QNX processes.<br>QNX SDP 8.0, x86_64, QEMU with KVM, 4 virtual CPUs.</p>
+<span class="overall">PASS: 9 of 9 steps as required</span>
+<table><tr><th>Step</th><th>Fault</th><th>Detected</th><th>Back in service</th><th>Worst tick late</th><th>Pump</th><th>Dose error</th><th>Verdict</th><th></th></tr>
+<tr class='pass'><td>Motor driver crashes</td><td><code>crash motor-drv</code></td><td>crash in 0.53 ms</td><td>2.26 ms</td><td>0.0 ms</td><td>kept running</td><td>-0.34%</td><td class='v'>PASS</td><td class='why'></td></tr><tr class='pass'><td>Flow sensor crashes</td><td><code>crash flow-sensor</code></td><td>crash in 0.53 ms</td><td>1.96 ms</td><td>0.0 ms</td><td>kept running</td><td>-0.21%</td><td class='v'>PASS</td><td class='why'></td></tr><tr class='pass'><td>Controller crashes</td><td><code>crash pump-ctrl</code></td><td>crash in 0.57 ms</td><td>2.81 ms</td><td>0.0 ms</td><td>kept running</td><td>1.22%</td><td class='v'>PASS</td><td class='why'></td></tr><tr class='pass'><td>Flow sensor freezes</td><td><code>hang flow-sensor</code></td><td>hang in 93.58 ms</td><td>96.03 ms</td><td>0.0 ms</td><td>held at 56.61 ms</td><td>-0.4%</td><td class='v'>PASS</td><td class='why'></td></tr><tr class='pass'><td>Motor driver freezes</td><td><code>hang motor-drv</code></td><td>hang in 102.19 ms</td><td>110.22 ms</td><td>0.0 ms</td><td>kept running</td><td>-0.21%</td><td class='v'>PASS</td><td class='why'></td></tr><tr class='pass'><td>Sensor replies 30 ms late</td><td><code>slow 30 800</code></td><td>–</td><td>–</td><td>0.0 ms</td><td>kept running</td><td>0.15%</td><td class='v'>PASS</td><td class='why'></td></tr><tr class='pass'><td>CPU flood below the controller&#x27;s priority</td><td><code>flood 30 200</code></td><td>–</td><td>–</td><td>0.0 ms</td><td>kept running</td><td>-0.15%</td><td class='v'>PASS</td><td class='why'></td></tr><tr class='pass'><td>Sensor stuck on one value</td><td><code>stuck 600</code></td><td>–</td><td>–</td><td>0.0 ms</td><td>alarm at 299.51 ms</td><td>-28.58%</td><td class='v'>PASS</td><td class='why'></td></tr><tr class='caught'><td>CPU flood above the controller&#x27;s priority</td><td><code>flood 41 80</code></td><td>–</td><td>–</td><td>60.85 ms</td><td>held at 80.38 ms</td><td>0.44%</td><td class='v'>CAUGHT</td><td class='why'>control tick 60.85 ms late, limit 5 ms</td></tr></table>
+<p class="note">Times come from the QNX target's CLOCK_MONOTONIC. Under QEMU they are approximate: the emulator doesn't run in real time, so the same build on real hardware gives tighter numbers. The pump is a simulation used to show recovery behaviour, not a medical device.</p>
+</main></body></html>
