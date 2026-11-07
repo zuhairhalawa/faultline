@@ -1,0 +1,72 @@
+{
+  "name": "Infusion pump, single faults",
+  "system": "Simulated infusion pump at 120 mL/h: sensor, motor driver and 100 Hz controller as separate QNX processes.",
+  "environment": "QNX SDP 8.0, x86_64, QEMU with KVM, 4 virtual CPUs.",
+  "settle_ms": 1200,
+  "steps": [
+    {
+      "id": "crash-motor",
+      "title": "Motor driver crashes",
+      "fault": "crash motor-drv",
+      "window_ms": 1200,
+      "limits": { "recover_ms": 20, "max_late_ms": 5, "alarm": false, "dose_err_pct": 2 }
+    },
+    {
+      "id": "crash-sensor",
+      "title": "Flow sensor crashes",
+      "fault": "crash flow-sensor",
+      "window_ms": 1200,
+      "limits": { "recover_ms": 20, "max_late_ms": 5, "alarm": false, "dose_err_pct": 2 }
+    },
+    {
+      "id": "crash-ctrl",
+      "title": "Controller crashes",
+      "fault": "crash pump-ctrl",
+      "window_ms": 1200,
+      "limits": { "recover_ms": 20, "alarm": false, "dose_err_pct": 2 }
+    },
+    {
+      "id": "hang-sensor",
+      "title": "Flow sensor freezes",
+      "fault": "hang flow-sensor",
+      "window_ms": 1200,
+      "limits": { "recover_ms": 150, "max_late_ms": 5, "alarm": false, "dose_err_pct": 2 }
+    },
+    {
+      "id": "hang-motor",
+      "title": "Motor driver freezes",
+      "fault": "hang motor-drv",
+      "window_ms": 1200,
+      "limits": { "recover_ms": 150, "max_late_ms": 5, "alarm": false, "dose_err_pct": 2 }
+    },
+    {
+      "id": "slow-sensor",
+      "title": "Sensor replies 30 ms late",
+      "fault": "slow 30 800",
+      "window_ms": 1200,
+      "limits": { "max_late_ms": 5, "alarm": false, "dose_err_pct": 2 }
+    },
+    {
+      "id": "flood-below",
+      "title": "CPU flood below the controller's priority",
+      "fault": "flood 30 200",
+      "window_ms": 800,
+      "limits": { "max_late_ms": 5, "alarm": false }
+    },
+    {
+      "id": "stuck-sensor",
+      "title": "Sensor stuck on one value",
+      "fault": "stuck 600",
+      "window_ms": 1000,
+      "limits": { "alarm": true, "alarm_within_ms": 400 }
+    },
+    {
+      "id": "flood-above",
+      "title": "CPU flood above the controller's priority",
+      "fault": "flood 41 80",
+      "window_ms": 800,
+      "expect_fail": true,
+      "limits": { "max_late_ms": 5 }
+    }
+  ]
+}

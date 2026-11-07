@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Faultline</title>
+<style>
+  :root {
+    --case: #d9dee0;      /* the pump's plastic enclosure */
+    --panel: #f4f6f6;
+    --ink: #1b2730;
+    --soft: #55636d;
+    --line: #c3cbcf;
+    --screen: #13222b;    /* the monitor display */
+    --grid: #1f3542;
+    --trace: #7fd8c9;
+    --run: #2e8b6e;
+    --hold: #c98a1b;
+    --alarm: #c8323a;
+    --fault: #e8c46a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--case);
+    color: var(--ink);
+    font: 15px/1.45 Bahnschrift, "DIN Alternate", "Segoe UI", system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    min-height: 100vh;
+  }
+  button, select { font: inherit; }
+  :focus-visible { outline: 3px solid #2f6fb3; outline-offset: 2px; }
+  code, .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; }
+
+  header {
+    display: flex; align-items: baseline; gap: 18px;
+    padding: 10px 24px 8px;
+  }
+  header h1 { font-size: 26px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  header .sub { color: var(--soft); }
+  header .link { margin-left: auto; color: var(--soft); font-size: 14px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--alarm); margin-right: 6px; }
+  .dot.on { background: var(--run); }
+
+  main {
+    display: grid;
+    grid-template-columns: 330px minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    gap: 14px;
+    padding: 0 24px 24px;
+  }
+
+  /* Front panel: the pump's own readout */
+  .front { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .readout { font-size: 56px; font-weight: 600; line-height: 1; font-stretch: condensed; letter-spacing: -0.02em; }
+  .readout small { font-size: 20px; font-weight: 400; color: var(--soft); margin-left: 6px; letter-spacing: 0; }
+  .vs { color: var(--soft); margin: 4px 0 10px; }
+  .mode { display: inline-block; padding: 4px 12px; border-radius: 999px; color: #fff; font-weight: 600; background: var(--run); }
+  .mode.hold { background: var(--hold); }
+  .mode.alarm { background: var(--alarm); }
+  .mode-text { margin: 8px 0 0; color: var(--soft); min-height: 2.9em; }
+  .dose { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 12px; display: grid; grid-template-columns: 1fr auto; row-gap: 4px; }
+  .dose span:nth-child(even) { text-align: right; font-weight: 600; }
+
+  /* The monitor */
+  .monitor { background: var(--screen); border-radius: 14px; padding: 12px 14px 10px; color: #cfe3e6; position: relative; }
+  .monitor .cap { display: flex; gap: 18px; font-size: 13px; color: #8fb1b8; margin-bottom: 6px; }
+  .monitor .cap b { color: var(--trace); font-weight: 600; }
+  .monitor .cap .late-key b { color: #e9a3a7; }
+  canvas { display: block; width: 100%; }
+  #trace { height: 236px; }
+  #late { height: 52px; margin-top: 4px; }
+
+  /* Process table */
+  .procs { grid-column: 1 / -1; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 18px 10px; }
+  .procs table { width: 100%; border-collapse: collapse; }
+  .procs th { text-align: left; font-weight: 400; color: var(--soft); font-size: 13px; padding: 6px 8px 4px; border-bottom: 1px solid var(--line); }
+  .procs td { padding: 4px 8px; border-bottom: 1px solid #e3e8ea; vertical-align: middle; }
+  .procs tr:last-child td { border-bottom: 0; }
+  .procs td.name { font-weight: 600; }
+  .state { display: inline-flex; align-items: center; gap: 6px; }
+  .state i { width: 10px; height: 10px; border-radius: 50%; background: var(--run); display: inline-block; }
+  .state.starting i, .state.restarting i { background: var(--hold); }
+  .state.failed i, .state.down i { background: var(--alarm); }
+  tr.flash td { animation: flash 900ms ease-out; }
+  @keyframes flash { from { background: #fbe3c2; } to { background: transparent; } }
+  .hb { width: 120px; height: 8px; background: #e3e8ea; border-radius: 4px; overflow: hidden; }
+  .hb i { display: block; height: 100%; background: var(--run); }
+  .hb.warn i { background: var(--hold); }
+  .btn { border: 1px solid #9aa6ad; background: #fff; color: var(--ink); border-radius: 6px; padding: 2px 12px; cursor: pointer; }
+  .btn:hover { border-color: var(--ink); }
+  .btn.crash { border-color: #d9a0a4; color: #9d2228; }
+  .btn.crash:hover { background: #fbecec; }
+  .btn.freeze { border-color: #9fb9d4; color: #1e4f80; }
+  .btn.freeze:hover { background: #eef4fb; }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .muted { color: var(--soft); }
+
+  .lower { grid-column: 1 / -1; display: grid; grid-template-columns: 330px minmax(0, 1fr) minmax(0, 1.1fr); gap: 14px; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 18px; max-height: 236px; overflow: auto; }
+  .box h2 { font-size: 16px; margin: 0 0 10px; font-weight: 600; }
+  .faults .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid #e3e8ea; }
+  .faults .row:last-child { border-bottom: 0; }
+  .faults select { border: 1px solid #9aa6ad; border-radius: 6px; padding: 2px 4px; background: #fff; }
+  .faults .hint { color: var(--soft); font-size: 13px; }
+
+  .events { max-height: 176px; overflow: auto; }
+  .ev { display: grid; grid-template-columns: 74px 1fr; gap: 10px; padding: 5px 0 5px 10px; border-left: 3px solid var(--line); margin-bottom: 4px; }
+  .ev .t { color: var(--soft); font-size: 13px; }
+  .ev.inject { border-color: var(--fault); }
+  .ev.death, .ev.hang, .ev.late, .ev.alarm { border-color: var(--alarm); }
+  .ev.hold { border-color: var(--hold); }
+  .ev.ready, .ev.resume { border-color: var(--run); }
+  .ev.ready b { color: var(--run); }
+
+  .camp table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .camp td { padding: 5px 6px; border-bottom: 1px solid #e3e8ea; }
+  .camp td.v { font-weight: 700; text-align: right; }
+  .camp tr.pass td.v, .camp tr.caught td.v { color: var(--run); }
+  .camp tr.fail td.v, .camp tr.missed td.v, .camp tr.error td.v { color: var(--alarm); }
+  .camp tr.now td { background: #fff7e6; }
+  .camp .head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .camp .head .btn { margin-left: auto; }
+  .camp .overall { font-weight: 700; }
+  .camp a { color: #1e4f80; }
+
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 8px 16px; border-radius: 6px; opacity: 0; transition: opacity 200ms; pointer-events: none; }
+  #toast.show { opacity: 1; }
+
+  @media (max-width: 1100px) {
+    main, .lower { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    tr.flash td { animation: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Faultline</h1>
+  <span class="sub">Breaking a QNX infusion pump on purpose, and timing the recovery</span>
+  <span class="link" id="link"><span class="dot"></span>Connecting to the target</span>
+</header>
+
+<main>
+  <section class="front" aria-label="Pump">
+    <div class="readout" id="flow">–<small>mL/h</small></div>
+    <div class="vs" id="vs">Prescribed 120 mL/h</div>
+    <span class="mode" id="mode">Running</span>
+    <p class="mode-text" id="mode-text">Flow sensor, motor driver and controller are separate QNX processes.</p>
+    <div class="dose">
+      <span>Delivered</span><span id="delivered">–</span>
+      <span>Prescribed so far</span><span id="expected">–</span>
+      <span>Difference</span><span id="diff">–</span>
+      <span>Control ticks late</span><span id="lateticks">–</span>
+    </div>
+  </section>
+
+  <section class="monitor" aria-label="Flow trace">
+    <div class="cap">
+      <span><b>Flow</b> mL/h, last 20 s</span>
+      <span>Dashed line: prescribed</span>
+      <span class="late-key"><b>Control loop</b> lateness, 2 ms limit</span>
+    </div>
+    <canvas id="trace"></canvas>
+    <canvas id="late"></canvas>
+  </section>
+
+  <section class="procs" aria-label="Processes">
+    <table>
+      <thead><tr><th>Process</th><th>PID</th><th>Priority</th><th>State</th><th>Restarts</th><th>Heartbeat</th><th></th></tr></thead>
+      <tbody id="proc-rows"></tbody>
+    </table>
+  </section>
+
+  <div class="lower">
+    <section class="box faults" aria-label="More faults">
+      <h2>More faults</h2>
+      <div class="row">
+        <span>CPU flood for 80 ms at priority
+          <select id="flood-prio" aria-label="Flood priority">
+            <option value="30">30, below the controller</option>
+            <option value="41">41, above the controller</option>
+          </select></span>
+        <button class="btn" data-cmd-flood>Flood</button>
+      </div>
+      <div class="row"><span>Sensor replies 30 ms late for 1 s</span><button class="btn" data-cmd="slow 30 1000">Slow down</button></div>
+      <div class="row"><span>Sensor stuck on one value for 0.6 s</span><button class="btn" data-cmd="stuck 600">Stick</button></div>
+      <p class="hint">The controller runs at priority 40 on every CPU's schedule.</p>
+    </section>
+
+    <section class="box" aria-label="Events">
+      <h2>What happened</h2>
+      <div class="events" id="events"></div>
+    </section>
+
+    <section class="box camp" aria-label="Campaign">
+      <div class="head">
+        <h2 style="margin:0">Fault campaign</h2>
+        <button class="btn" id="run-camp">Run all faults</button>
+      </div>
+      <div id="camp-status" class="muted">Runs each fault in turn and checks it against its limits, then writes a report.</div>
+      <table id="camp-rows"></table>
+    </section>
+  </div>
+</main>
+<div id="toast" role="status"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const WINDOW_MS = 20000, Y_MAX = 160, LATE_MAX_US = 20000, LATE_LIMIT_US = 2000;
+const samples = [];          // {t, flow, target, late}
+const marks = [];            // {t, label, kind}
+let state = null, lastT = 0, clockOffset = null;
+const seen = new Set();
+const prevRestarts = {};
+
+const EV = { 1:'start', 2:'inject', 3:'death', 4:'hang', 5:'restart', 6:'ready', 7:'late', 8:'hold', 9:'alarm', 10:'resume', 11:'end', 12:'gaveup' };
+
+function toast(text) {
+  const t = $('toast'); t.textContent = text; t.classList.add('show');
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+async function inject(cmd) {
+  const r = await fetch('/api/inject', { method: 'POST', body: JSON.stringify({ cmd }) }).then(r => r.json()).catch(() => ({ ok: false, error: 'dashboard server not reachable' }));
+  if (!r.ok) toast(`Not injected: ${r.error || 'unknown error'}`);
+}
+
+/* ---------- state ---------- */
+function onState(s) {
+  state = s; lastT = s.t_ms;
+  samples.push({ t: s.t_ms, flow: s.plant.flow_mlh, target: s.ctrl.target_mlh, late: s.ctrl.last_late_us });
+  while (samples.length && samples[0].t < s.t_ms - WINDOW_MS * 2) samples.shift();
+
+  $('flow').firstChild.nodeValue = s.plant.flow_mlh.toFixed(1);
+  $('vs').textContent = `Prescribed ${s.ctrl.target_mlh.toFixed(0)} mL/h`;
+  const mode = $('mode'), text = $('mode-text');
+  mode.className = 'mode ' + (s.ctrl.mode === 'run' ? '' : s.ctrl.mode);
+  mode.textContent = { run: 'Running', hold: 'Holding last speed', alarm: 'Alarm: motor stopped' }[s.ctrl.mode];
+  text.textContent = {
+    run: 'Flow sensor, motor driver and controller are separate QNX processes.',
+    hold: 'No trusted flow reading. Keeping the last motor speed for up to 200 ms.',
+    alarm: 'No trusted reading for too long, so the pump stopped itself and raised an alarm.',
+  }[s.ctrl.mode];
+  $('delivered').textContent = s.plant.volume_ml.toFixed(4) + ' mL';
+  $('expected').textContent = s.ctrl.expected_ml.toFixed(4) + ' mL';
+  const d = s.ctrl.expected_ml > 0 ? (s.plant.volume_ml - s.ctrl.expected_ml) / s.ctrl.expected_ml * 100 : 0;
+  $('diff').textContent = (d >= 0 ? '+' : '') + d.toFixed(2) + '%';
+  $('lateticks').textContent = `${s.ctrl.late} of ${s.ctrl.ticks}`;
+  renderProcs(s.procs);
+}
+
+function renderProcs(procs) {
+  const body = $('proc-rows');
+  procs.forEach((p, i) => {
+    let tr = body.children[i];
+    if (!tr) {
+      tr = document.createElement('tr');
+      tr.innerHTML = `<td class="name"></td><td class="mono pid"></td><td class="prio"></td><td><span class="state"><i></i><span></span></span></td><td class="rs"></td><td><div class="hb"><i></i></div></td><td class="act"></td>`;
+      if (p.faultable) {
+        const a = tr.querySelector('.act');
+        a.innerHTML = `<button class="btn crash">Crash</button> <button class="btn freeze">Freeze</button>`;
+        a.querySelector('.crash').onclick = () => inject(`crash ${p.name}`);
+        a.querySelector('.freeze').onclick = () => inject(`hang ${p.name}`);
+      } else {
+        tr.querySelector('.act').innerHTML = `<span class="muted">${p.name === 'fl-plant' ? 'the physical pump: never faulted' : 'Faultline itself'}</span>`;
+      }
+      body.appendChild(tr);
+    }
+    tr.querySelector('.name').textContent = p.name;
+    tr.querySelector('.pid').textContent = p.pid;
+    tr.querySelector('.prio').textContent = p.prio;
+    const st = tr.querySelector('.state');
+    st.className = 'state ' + p.state;
+    st.querySelector('span').textContent = p.state;
+    tr.querySelector('.rs').textContent = p.restarts;
+    const frac = p.heartbeat_ms > 0 && p.hb_age_ms >= 0 ? Math.min(1, p.hb_age_ms / p.heartbeat_ms) : 0;
+    const hb = tr.querySelector('.hb');
+    hb.firstChild.style.width = (100 - frac * 100).toFixed(0) + '%';
+    hb.classList.toggle('warn', frac > 0.5);
+    hb.title = `last heartbeat ${p.hb_age_ms.toFixed(0)} ms ago, deadline ${p.heartbeat_ms} ms`;
+    if (prevRestarts[p.name] !== undefined && p.restarts > prevRestarts[p.name]) {
+      tr.classList.remove('flash'); void tr.offsetWidth; tr.classList.add('flash');
+    }
+    prevRestarts[p.name] = p.restarts;
+    tr.querySelectorAll('button').forEach(b => b.disabled = p.state !== 'running');
+  });
+}
+
+/* ---------- events ---------- */
+function evLabel(e) {
+  const kind = EV[e.type] || 'other';
+  if (kind === 'ready') return `<b>${e.proc} back in service ${(e.arg / 1000).toFixed(2)} ms after the fault</b>`;
+  return escapeHtml(e.text);
+}
+function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function onEvent(e, live) {
+  if (seen.has(e.seq)) return;
+  seen.add(e.seq);
+  const kind = EV[e.type] || 'other';
+  if (kind === 'start' && !live) return;
+  const list = $('events');
+  const div = document.createElement('div');
+  div.className = 'ev ' + kind;
+  div.innerHTML = `<span class="t">${(e.t_ms / 1000).toFixed(3)} s</span><span>${evLabel(e)}</span>`;
+  list.prepend(div);
+  while (list.children.length > 120) list.lastChild.remove();
+
+  if (kind === 'inject') marks.push({ t: e.t_ms, label: e.text.replace(/^inject /, ''), kind: 'inject' });
+  if (kind === 'ready') marks.push({ t: e.t_ms, label: `back ${(e.arg / 1000).toFixed(1)} ms`, kind: 'ready' });
+  if (kind === 'alarm') marks.push({ t: e.t_ms, label: 'safe stop', kind: 'alarm' });
+  if (kind === 'late') marks.push({ t: e.t_ms, label: `${(e.arg / 1000).toFixed(0)} ms late`, kind: 'late' });
+  while (marks.length && marks[0].t < lastT - WINDOW_MS * 2) marks.shift();
+}
+
+/* ---------- the monitor: a sweeping trace, like a bedside monitor ---------- */
+function fit(c) {
+  const r = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  if (c.width !== Math.round(r.width * dpr) || c.height !== Math.round(r.height * dpr)) {
+    c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr);
+  }
+  const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [g, r.width, r.height];
+}
+
+function sweepX(t, w) { return ((t % WINDOW_MS) / WINDOW_MS) * w; }
+
+function draw() {
+  requestAnimationFrame(draw);
+  if (!samples.length) return;
+  const now = lastT;
+  const [g, w, h] = fit($('trace'));
+  g.clearRect(0, 0, w, h);
+  // grid
+  g.strokeStyle = '#1f3542'; g.lineWidth = 1;
+  for (let v = 0; v <= Y_MAX; v += 40) { const y = h - (v / Y_MAX) * (h - 20) - 10; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); g.fillStyle = '#4f7380'; g.font = '11px Bahnschrift, sans-serif'; g.fillText(v, 4, y - 3); }
+  for (let s = 0; s <= 20; s += 5) { const x = (s / 20) * w; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+  const y = (v) => h - (Math.max(0, Math.min(Y_MAX, v)) / Y_MAX) * (h - 20) - 10;
+  // prescribed
+  g.setLineDash([6, 6]); g.strokeStyle = '#a9c1c7'; g.beginPath(); g.moveTo(0, y(samples.at(-1).target)); g.lineTo(w, y(samples.at(-1).target)); g.stroke(); g.setLineDash([]);
+  // trace: current sweep from the left, previous sweep to the right of the gap
+  const head = sweepX(now, w), gap = 26;
+  g.lineWidth = 2.2; g.strokeStyle = '#7fd8c9';
+  g.beginPath();
+  let pen = false, prevX = -1;
+  for (const s of samples) {
+    if (s.t < now - WINDOW_MS) continue;
+    const x = sweepX(s.t, w);
+    const sameSweep = Math.floor(s.t / WINDOW_MS) === Math.floor(now / WINDOW_MS);
+    const visible = sameSweep || x > head + gap;
+    if (!visible || x < prevX) { pen = false; prevX = x; if (!visible) continue; }
+    if (!pen) { g.moveTo(x, y(s.flow)); pen = true; } else g.lineTo(x, y(s.flow));
+    prevX = x;
+  }
+  g.stroke();
+  // sweep head
+  g.fillStyle = '#7fd8c9'; g.beginPath(); g.arc(head, y(samples.at(-1).flow), 3.5, 0, Math.PI * 2); g.fill();
+  // fault marks stamped on the trace
+  g.font = '600 14px Bahnschrift, sans-serif';
+  const colors = { inject: '#e8c46a', ready: '#7fd8c9', alarm: '#ff7b81', late: '#ff9ea3' };
+  let row = 0, lastX = -999;
+  for (const m of marks) {
+    if (m.t < now - WINDOW_MS) continue;
+    const x = sweepX(m.t, w);
+    const sameSweep = Math.floor(m.t / WINDOW_MS) === Math.floor(now / WINDOW_MS);
+    if (!sameSweep && x <= head + gap) continue;
+    row = Math.abs(x - lastX) < 120 ? row + 1 : 0; lastX = x;
+    g.strokeStyle = colors[m.kind]; g.lineWidth = m.kind === 'inject' ? 1.5 : 1;
+    if (m.kind === 'inject') { g.beginPath(); g.moveTo(x, 8); g.lineTo(x, h); g.stroke(); }
+    g.fillStyle = colors[m.kind];
+    const ty = 22 + (row % 4) * 18;
+    g.fillText(m.label, Math.min(x + 5, w - g.measureText(m.label).width - 4), ty);
+  }
+
+  // lateness strip
+  const [lg, lw, lh] = fit($('late'));
+  lg.clearRect(0, 0, lw, lh);
+  const ly = (us) => lh - (Math.min(us, LATE_MAX_US) / LATE_MAX_US) * (lh - 6) - 2;
+  lg.strokeStyle = '#5c3a40'; lg.setLineDash([4, 4]); lg.beginPath(); lg.moveTo(0, ly(LATE_LIMIT_US)); lg.lineTo(lw, ly(LATE_LIMIT_US)); lg.stroke(); lg.setLineDash([]);
+  for (const s of samples) {
+    if (s.t < now - WINDOW_MS) continue;
+    const x = sweepX(s.t, lw);
+    const sameSweep = Math.floor(s.t / WINDOW_MS) === Math.floor(now / WINDOW_MS);
+    if (!sameSweep && x <= head + gap) continue;
+    lg.fillStyle = s.late > LATE_LIMIT_US ? '#ff7b81' : '#3f6a74';
+    const top = ly(s.late);
+    lg.fillRect(x, top, 2, lh - 2 - top);
+  }
+  for (const m of marks) {
+    if (m.kind !== 'late' || m.t < now - WINDOW_MS) continue;
+    const x = sweepX(m.t, lw);
+    lg.fillStyle = '#ff7b81'; lg.fillRect(x, 2, 2, lh - 4);
+  }
+}
+
+/* ---------- campaign ---------- */
+async function pollCampaign() {
+  const c = await fetch('/api/campaign').then(r => r.json()).catch(() => null);
+  if (c) renderCampaign(c);
+  setTimeout(pollCampaign, c && c.running ? 700 : 3000);
+}
+function renderCampaign(c) {
+  $('run-camp').disabled = c.running;
+  const st = $('camp-status');
+  if (c.error) st.textContent = `Stopped: ${c.error}`;
+  else if (c.running) st.textContent = `Running ${c.title || ''}…`;
+  else if (c.report) {
+    const n = c.results.filter(r => r.verdict === 'PASS' || r.verdict === 'CAUGHT').length;
+    st.innerHTML = `<span class="overall" style="color:${c.report.ok ? 'var(--run)' : 'var(--alarm)'}">${c.report.ok ? 'Pass' : 'Fail'}: ${n} of ${c.results.length} steps as required.</span> <a href="${c.report.html}" target="_blank">Open the report</a>`;
+  }
+  const rows = c.results.map(r => {
+    const m = r.measured || {};
+    let detail = '';
+    if (m.recover_ms != null) detail = `back in ${m.recover_ms} ms`;
+    else if (m.alarm_ms != null) detail = `safe stop at ${m.alarm_ms} ms`;
+    else detail = `worst tick ${m.max_late_ms ?? 0} ms late`;
+    return `<tr class="${r.verdict.toLowerCase()}"><td>${escapeHtml(r.title)}</td><td class="muted">${detail}</td><td class="v">${r.verdict === 'CAUGHT' ? 'Caught' : r.verdict[0] + r.verdict.slice(1).toLowerCase()}</td></tr>`;
+  });
+  if (c.running && c.current) rows.push(`<tr class="now"><td colspan="3">Testing ${escapeHtml(c.current)}…</td></tr>`);
+  $('camp-rows').innerHTML = rows.join('');
+}
+$('run-camp').onclick = async () => {
+  const r = await fetch('/api/campaign', { method: 'POST', body: JSON.stringify({ name: 'pump' }) }).then(r => r.json());
+  if (!r.ok) toast(r.error); else pollCampaign();
+};
+
+/* ---------- wiring ---------- */
+document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = () => inject(b.dataset.cmd));
+document.querySelector('[data-cmd-flood]').onclick = () => inject(`flood ${$('flood-prio').value} 80`);
+
+function setLink(on, target) {
+  $('link').innerHTML = `<span class="dot ${on ? 'on' : ''}"></span>${on ? `Live from QNX target ${target}` : `Not connected to ${target}. Is the QNX target running?`}`;
+}
+
+async function start() {
+  let snap = null;
+  while (!snap) {
+    snap = await fetch('/api/snapshot').then(r => r.json()).catch(() => null);
+    if (!snap) { setLink(false, 'the dashboard server'); await new Promise(r => setTimeout(r, 1000)); }
+  }
+  setLink(snap.connected, snap.target);
+  for (const [t, flow, target, late] of snap.history) samples.push({ t, flow, target, late });
+  if (snap.state) onState(snap.state);
+  for (const e of snap.events) onEvent(e, false);
+  const es = new EventSource('/stream');
+  es.onmessage = (m) => {
+    const msg = JSON.parse(m.data);
+    if (msg.kind === 'state') onState(msg);
+    else if (msg.kind === 'event') onEvent(msg, true);
+    else if (msg.kind === 'link') setLink(msg.connected, msg.target);
+  };
+  requestAnimationFrame(draw);
+  pollCampaign();
+}
+start();
+</script>
+</body>
+</html>

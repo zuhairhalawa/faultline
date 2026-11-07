@@ -41,7 +41,7 @@ Each answer is checked against limits written in the campaign file, and the repo
 | Slow replies | A flag in shared memory makes a server delay its replies | The controller's timeout fires and it falls back as designed |
 | Stuck sensor | The sensor repeats one value | The controller's plausibility check flags it |
 
-### On the host (Node.js, no outside packages)
+### On the host (Python 3 standard library, no outside packages)
 
 - **Dashboard:** a local web page.
   - Process tiles show state, PID and restart count.
