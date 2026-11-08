@@ -2,6 +2,8 @@
 
 A hands-on codelab for QNX 8.0. About 30 minutes.
 
+**Follow it step by step at [zuhairhalawa.github.io/faultline/qnx-timertimeout-unblock](https://zuhairhalawa.github.io/faultline/qnx-timertimeout-unblock/).** That page is built from [`qnx-timertimeout-unblock.md`](qnx-timertimeout-unblock.md) (the same claat format as the [QNX codelabs](https://qnx.github.io/codelabs/)) by [`build_site.py`](build_site.py). This README has the same content on one page.
+
 You will build a tiny message-passing server and client, and watch a 5 ms timeout fail to stop a client from waiting 30 ms, then forever. Then you will fix it twice: on the server, so a slow server honours the client's timeout, and on the client, so even a frozen server can't stall a real-time loop.
 
 This came out of [Faultline](../README.md): a pump controller that read its sensor with a 5 ms timeout ran 77 ms late when the sensor froze.
