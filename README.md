@@ -33,6 +33,8 @@ The pump campaign in [`campaigns/pump.json`](campaigns/pump.json) runs nine faul
 
 The control loop's deadline is 5 ms. "Worst control tick late" is the worst of every 100 Hz tick in the step, measured by the controller against its timer. At idle in QEMU it is about 0.3 to 0.5 ms; a restart elsewhere costs it about 2.5 ms.
 
+![The HTML report for that run: 9 of 9 steps as required, with detection, recovery, lateness, pump state and dose error per fault](docs/sample-report.png)
+
 The last row is a check of the checker. A busy task above the controller's priority is supposed to make it miss deadlines, and the step passes only if Faultline catches that.
 
 Two of the things it found were problems in the pump's own design, and both are now fixed:
@@ -43,6 +45,8 @@ Two of the things it found were problems in the pump's own design, and both are 
    - Fix: the control loop never waits on another process. Two worker threads do the sensor reads and motor writes, and the loop only uses readings fresh enough to trust.
    - The sensor now also answers `_PULSE_CODE_UNBLOCK` with `MsgError(ETIMEDOUT)`, and does slow replies as deferred replies driven by a timer instead of sleeping. So a sensor that is alive but slow releases the controller at its 5 ms timeout. Only a frozen one can't, which is what the worker threads are for.
    - With the sensor frozen, the worst tick is now 0.46 ms late in the run above, well inside the 5 ms deadline.
+
+   ![pidin while the sensor was frozen, before the fix: flow-sensor STOPPED, pump-ctrl REPLY-blocked on it](docs/finding-unblock.png)
 2. **Crash detection waited for core dumps.**
    - A process killed by `SIGSEGV` goes to `dumper` (priority 10 here) for a core file before its parent can reap it.
    - Detection took about **20 ms**, almost all of it waiting on that.
