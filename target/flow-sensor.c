@@ -4,6 +4,15 @@
  * Registers the name "fl-flow". The controller connects with name_open() and
  * asks for a reading with MsgSend(). Two faults act here: slow replies, and a
  * stuck value that repeats the last reading.
+ *
+ * name_attach() gives the channel _NTO_CHF_UNBLOCK. When a client's
+ * TimerTimeout expires while it waits for our reply, the kernel doesn't release
+ * it; it sends us _PULSE_CODE_UNBLOCK and leaves the decision to us. So the
+ * sensor never sleeps while holding a request. A slow reply is a deferred
+ * reply: we keep the rcvid, arm a one-shot timer, and stay in MsgReceive(). If
+ * the unblock pulse for that rcvid arrives first, we answer it with ETIMEDOUT,
+ * and the client's timeout works. Only a frozen sensor can't do this, which is
+ * why the controller does its reads from a worker thread.
  */
 #include <errno.h>
 #include <stdio.h>
@@ -22,6 +31,10 @@ typedef union {
     struct fl_flow_req req;
 } sensor_msg_t;
 
+/* The one request we are holding back, if any (the controller sends one at a time). */
+static rcvid_t held = 0;
+static struct fl_flow_reply held_reply;
+
 int main(void)
 {
     struct fl_state *s = fl_map(0);
@@ -37,8 +50,12 @@ int main(void)
         return 1;
     }
     int self = ConnectAttach(0, 0, att->chid, _NTO_SIDE_CHANNEL, 0);
-    timer_t tid;
-    if (self == -1 || fl_periodic_pulse(self, FL_PULSE_TICK, SENSOR_HEARTBEAT_NS, &tid) == -1) {
+    timer_t tid, reply_timer;
+    struct sigevent reply_ev;
+    SIGEV_PULSE_INIT(&reply_ev, self, SIGEV_PULSE_PRIO_INHERIT, FL_PULSE_REPLY, 0);
+    if (self == -1 || fl_periodic_pulse(self, FL_PULSE_TICK, SENSOR_HEARTBEAT_NS, &tid) == -1 ||
+        timer_create(CLOCK_MONOTONIC, &reply_ev, &reply_timer) == -1) {
+        perror("flow-sensor setup");
         return 1;
     }
 
@@ -54,10 +71,30 @@ int main(void)
             continue;
         }
         if (rcvid == 0) {
-            if (msg.pulse.code == FL_PULSE_TICK) {
+            switch (msg.pulse.code) {
+            case FL_PULSE_TICK:
                 fl_heartbeat(&hb, me);
-            } else if (msg.pulse.code == _PULSE_CODE_DISCONNECT) {
+                break;
+            case FL_PULSE_REPLY:
+                if (held) {
+                    MsgReply(held, EOK, &held_reply, sizeof(held_reply));   /* the delayed reading */
+                    held = 0;
+                }
+                break;
+            case _PULSE_CODE_UNBLOCK:
+                /* The client gave up (its TimerTimeout expired). Release it now. */
+                if (held && (rcvid_t)msg.pulse.value.sival_long == held) {
+                    struct itimerspec off = { 0 };
+                    timer_settime(reply_timer, 0, &off, NULL);
+                    MsgError(held, ETIMEDOUT);
+                    held = 0;
+                }
+                break;
+            case _PULSE_CODE_DISCONNECT:
                 ConnectDetach(msg.pulse.scoid);
+                break;
+            default:
+                break;
             }
             continue;
         }
@@ -83,9 +120,15 @@ int main(void)
         r.sample_ns = now;
         r.seq = ++seq;
 
-        if (now < s->slow_until_ns && s->slow_reply_ms > 0) {
-            struct timespec d = { s->slow_reply_ms / 1000, (s->slow_reply_ms % 1000) * 1000000L };
-            nanosleep(&d, NULL);
+        if (now < s->slow_until_ns && s->slow_reply_ms > 0 && !held) {
+            /* Slow reply fault: hold the request and answer it when the timer fires. */
+            held = rcvid;
+            held_reply = r;
+            struct itimerspec its = { 0 };
+            its.it_value.tv_sec = s->slow_reply_ms / 1000;
+            its.it_value.tv_nsec = (s->slow_reply_ms % 1000) * 1000000L;
+            timer_settime(reply_timer, 0, &its, NULL);
+            continue;
         }
         MsgReply(rcvid, EOK, &r, sizeof(r));
     }

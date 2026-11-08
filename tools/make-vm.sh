@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Builds (does not run) a QEMU x86_64 QNX 8.0 image in ~/fl-vm with SSH key login for root.
 set -euo pipefail
-source "$HOME/qnx800/qnxsdp-env.sh" > /dev/null
+source "${QNX_SDP:-$HOME/qnx800}/qnxsdp-env.sh" > /dev/null
 export COLUMNS=120
 if [ ! -f "$HOME/.ssh/id_ed25519.pub" ]; then
+    echo "No SSH key at ~/.ssh/id_ed25519; creating one (no passphrase) for root login to the VM."
     mkdir -p "$HOME/.ssh"
     ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519"
 fi

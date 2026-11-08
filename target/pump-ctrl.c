@@ -15,8 +15,11 @@
  *
  * If no good reading arrives for 50 ms (or readings look stuck), the loop
  * holds the last speed for up to 200 ms more, then stops the motor and raises
- * an alarm. It also measures how late
- * each tick starts, which is how Faultline shows whether the deadline was kept.
+ * an alarm. It also measures how late each tick starts, which is how Faultline
+ * shows whether the 5 ms deadline was kept.
+ *
+ * The sensor answers the unblock pulse, so a sensor that is alive but slow is
+ * released at the 5 ms TimerTimeout. Only a frozen one can't be.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -162,11 +165,12 @@ int main(void)
     int same_count = 0;
     int late_run = 0;          /* consecutive late ticks */
     int64_t late_worst = 0;    /* worst lateness in the current run */
-    uint64_t start = fl_now_ns();
-    uint64_t last = start;
+    uint64_t last = fl_now_ns();
+    uint64_t start = 0;        /* time of the first tick: slot 0 of the schedule */
+    uint64_t slot = 0;         /* the last schedule slot this loop has handled */
     uint64_t tick = 0;
     if (s->sensor_ok_ns == 0) {
-        s->sensor_ok_ns = start;
+        s->sensor_ok_ns = last;
     }
 
     struct _pulse p;
@@ -177,14 +181,37 @@ int main(void)
         uint64_t now = fl_now_ns();
         tick++;
 
-        /* How late did this tick start? */
-        int64_t late = (int64_t)(now - (start + tick * FL_CTRL_PERIOD_NS));
-        if (late < 0) {
-            late = 0;
+        /* How late did this tick start? The slot that is due comes from the clock, not
+         * from counting pulses: after a stall, QNX delivers the timer pulses that queued
+         * up back to back. The first one is measured against the first slot it missed;
+         * the rest belong to slots already caught up on, so they don't count. */
+        int64_t late = 0;
+        if (start == 0) {
+            start = now;
+        } else {
+            uint64_t due = (now - start + FL_CTRL_PERIOD_NS / 2) / FL_CTRL_PERIOD_NS;
+            if (now < start + due * FL_CTRL_PERIOD_NS) {
+                /* Earlier than its slot: the anchor (the first tick) was itself a little
+                 * late. Move it, so lateness is measured from the timer's best-case phase. */
+                start = now - due * FL_CTRL_PERIOD_NS;
+            }
+            if (due > slot) {
+                late = (int64_t)(now - (start + (slot + 1) * FL_CTRL_PERIOD_NS));
+                if (late < 0) {
+                    late = 0;
+                }
+                slot = due;
+            }
         }
         s->ctrl_last_late_ns = late;
         if (late > s->ctrl_max_late_ns) {
             s->ctrl_max_late_ns = late;
+        }
+        /* Worst tick of the current sampling window. fl-bridge swaps it back to 0 every
+         * 50 ms, so every tick is measured, including those inside the deadline. */
+        int64_t seen = __atomic_load_n(&s->ctrl_win_late_ns, __ATOMIC_RELAXED);
+        while (late > seen &&
+               !__atomic_compare_exchange_n(&s->ctrl_win_late_ns, &seen, late, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         }
         if (late > FL_LATE_LIMIT_NS) {
             s->ctrl_late++;
@@ -199,9 +226,6 @@ int main(void)
                      late_worst / 1e6);
             late_run = 0;
             late_worst = 0;
-        }
-        if (late > 5 * FL_CTRL_PERIOD_NS) {
-            start = now - tick * FL_CTRL_PERIOD_NS;   /* resync after a long stall */
         }
         double dt = (double)(now - last) / 1e9;
         last = now;

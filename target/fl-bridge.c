@@ -23,6 +23,7 @@
 struct client {
     int fd;
     uint32_t ev_next;
+    uint64_t wait_ns;     /* when we started waiting on an unfinished event, 0 if not */
     char in[256];
     size_t in_len;
 };
@@ -57,7 +58,8 @@ static int send_all(int fd, const char *buf, size_t len)
     return 0;
 }
 
-static int send_state(int fd)
+/* win_late_ns: the worst control tick since the previous state line. */
+static int send_state(int fd, int64_t win_late_ns)
 {
     char buf[4096];
     uint64_t now = fl_now_ns();
@@ -65,7 +67,8 @@ static int send_state(int fd)
         "{\"kind\":\"state\",\"t_ms\":%.3f,"
         "\"plant\":{\"cmd_rpm\":%.3f,\"rpm\":%.3f,\"flow_mlh\":%.3f,\"volume_ml\":%.5f},"
         "\"ctrl\":{\"target_mlh\":%.1f,\"expected_ml\":%.5f,\"flow_mlh\":%.3f,\"mode\":\"%s\","
-        "\"ticks\":%llu,\"late\":%llu,\"last_late_us\":%lld,\"max_late_us\":%lld,\"sensor_fail\":%llu},"
+        "\"ticks\":%llu,\"late\":%llu,\"last_late_us\":%lld,\"max_late_us\":%lld,\"win_late_us\":%lld,"
+        "\"sensor_fail\":%llu},"
         "\"procs\":[",
         (now - s->boot_ns) / 1e6,
         s->motor_cmd_rpm, s->motor_rpm, s->flow_mlh, s->volume_ml,
@@ -73,7 +76,7 @@ static int send_state(int fd)
         mode_names[s->pump_mode >= 0 && s->pump_mode <= 2 ? s->pump_mode : 0],
         (unsigned long long)s->ctrl_ticks, (unsigned long long)s->ctrl_late,
         (long long)(s->ctrl_last_late_ns / 1000), (long long)(s->ctrl_max_late_ns / 1000),
-        (unsigned long long)s->sensor_fail);
+        (long long)(win_late_ns / 1000), (unsigned long long)s->sensor_fail);
     for (int i = 0; i < s->nproc && n < (int)sizeof(buf) - 256; i++) {
         struct fl_proc *p = &s->proc[i];
         n += snprintf(buf + n, sizeof(buf) - n,
@@ -97,6 +100,31 @@ static int send_events(struct client *c)
     char buf[512], text[120];
     while (c->ev_next != head) {
         struct fl_event *e = &s->ev[c->ev_next % FL_EVENTS];
+        uint32_t want = c->ev_next + 1;
+        if (__atomic_load_n(&e->seq, __ATOMIC_ACQUIRE) != want) {
+            if (e->seq == 0 || (int32_t)(e->seq - want) < 0) {
+                /* Still being written: send it on a later pass. A writer killed mid-event
+                 * (a crash fault can land there) never finishes, so give up after 100 ms. */
+                uint64_t now = fl_now_ns();
+                if (c->wait_ns == 0) {
+                    c->wait_ns = now;
+                } else if (now - c->wait_ns > 100000000ULL) {
+                    c->wait_ns = 0;
+                    c->ev_next++;
+                    continue;
+                }
+                break;
+            }
+            c->wait_ns = 0;
+            c->ev_next++;        /* already overwritten by a newer event */
+            continue;
+        }
+        struct fl_event copy = *e;
+        if (__atomic_load_n(&e->seq, __ATOMIC_ACQUIRE) != want) {
+            c->ev_next++;        /* overwritten while we copied it */
+            continue;
+        }
+        e = &copy;
         json_escape(text, sizeof(text), e->text);
         const char *pname = (e->proc >= 0 && e->proc < s->nproc) ? s->proc[e->proc].name : "";
         int n = snprintf(buf, sizeof(buf),
@@ -207,6 +235,7 @@ int main(void)
                 if (cl[i].fd == -1) {
                     cl[i].fd = fd;
                     cl[i].in_len = 0;
+                    cl[i].wait_ns = 0;
                     uint32_t head = s->ev_head;
                     cl[i].ev_next = head > FL_EVENTS ? head - FL_EVENTS : 0;   /* replay recent history */
                     placed = 1;
@@ -233,8 +262,9 @@ int main(void)
         }
         if (now >= next_state) {
             next_state = now + 50000000ULL;
+            int64_t win = __atomic_exchange_n(&s->ctrl_win_late_ns, 0, __ATOMIC_ACQ_REL);
             for (int i = 0; i < MAX_CLIENTS; i++) {
-                if (cl[i].fd != -1 && send_state(cl[i].fd) == -1) {
+                if (cl[i].fd != -1 && send_state(cl[i].fd, win) == -1) {
                     close(cl[i].fd);
                     cl[i].fd = -1;
                 }

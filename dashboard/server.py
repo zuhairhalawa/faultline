@@ -39,6 +39,7 @@ class Target:
         self.listeners = set()
         self.acks = queue.Queue()
         self.connected = False
+        self.on_reconnect = None    # called after each new connection, e.g. to clear old results
         threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self):
@@ -54,6 +55,8 @@ class Target:
                     self.events.clear()
                     self.history.clear()
                     self.state = None
+                if self.on_reconnect:
+                    self.on_reconnect()
                 self._publish({"kind": "link", "connected": True, "target": self.host})
                 buf = b""
                 while True:
@@ -82,8 +85,9 @@ class Target:
             with self.lock:
                 self.state = msg
                 c = msg["ctrl"]
+                # win_late_us: the worst control tick since the previous state line (every 50 ms).
                 self.history.append((msg["t_ms"], msg["plant"]["flow_mlh"], c["target_mlh"],
-                                     c["last_late_us"], c["mode"]))
+                                     c.get("win_late_us", c["last_late_us"]), c["mode"]))
                 if len(self.history) > 1200:
                     del self.history[:200]
         elif kind == "event":
@@ -137,6 +141,13 @@ class Target:
     def events_since(self, seq):
         with self.lock:
             return [self.events[k] for k in sorted(self.events) if k >= seq]
+
+    def worst_late_us(self, t_from, t_to):
+        """Worst control tick between two target times (ms), from the 50 ms state samples."""
+        with self.lock:
+            # A sample at t covers the 50 ms before it.
+            lates = [h[3] for h in self.history if t_from < h[0] <= t_to + 50]
+        return max(lates) if lates else None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -231,18 +242,23 @@ def default_target():
     ip_file = Path(os.path.expanduser("~/fl-vm/.ip"))
     if ip_file.exists():
         return ip_file.read_text().strip()
-    return "192.168.122.80"
+    return None
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--target", default=default_target())
+    ap.add_argument("--target", default=default_target(), help="QNX target IP (default: from ~/fl-vm/.ip)")
     ap.add_argument("--port", type=int, default=8800)
+    ap.add_argument("--bind", default="127.0.0.1",
+                    help="address to serve on; the dashboard can inject faults, so keep it local unless you mean it")
     args = ap.parse_args()
+    if not args.target:
+        sys.exit("No target address. Boot the VM with tools/vm.sh start, or pass --target <IP>.")
     target = Target(args.target)
     Handler.target = target
     Handler.runner = campaign.Runner(target, ROOT / "campaigns", ROOT / "reports")
-    server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+    target.on_reconnect = Handler.runner.clear
+    server = ThreadingHTTPServer((args.bind, args.port), Handler)
     print(f"Faultline dashboard on http://localhost:{args.port}  (target {args.target})", flush=True)
     server.serve_forever()
 

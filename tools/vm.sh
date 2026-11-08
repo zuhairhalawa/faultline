@@ -8,7 +8,7 @@
 #   tools/vm.sh run       start Faultline on the target (restarts it if running)
 #   tools/vm.sh halt      stop Faultline on the target
 set -uo pipefail
-source "$HOME/qnx800/qnxsdp-env.sh" > /dev/null
+source "${QNX_SDP:-$HOME/qnx800}/qnxsdp-env.sh" > /dev/null
 export COLUMNS=120 MKQNXIMAGE_NOPROMPT=1
 VM="$HOME/fl-vm"
 BUILD="${FL_BUILD_DIR:-$HOME/faultline-build}/target"

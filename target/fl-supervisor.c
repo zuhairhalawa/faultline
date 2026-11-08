@@ -93,6 +93,10 @@ static void *reaper(void *arg)
         }
         uint64_t t = fl_now_ns();
         pthread_mutex_lock(&ring_lock);
+        if (d_head - d_tail >= DEATH_RING) {
+            d_tail++;   /* main loop far behind: drop the oldest rather than overwrite silently */
+            fprintf(stderr, "fl-supervisor: death queue full, dropped one\n");
+        }
         deaths[d_head % DEATH_RING].pid = pid;
         deaths[d_head % DEATH_RING].status = status;
         deaths[d_head % DEATH_RING].t_ns = t;
@@ -115,6 +119,8 @@ static void restart(int i, const char *why)
     p->state = FL_RESTARTING;
     if (launch(i) == 0) {
         fl_event(s, FL_EV_RESTART, i, p->pid, p->restarts, "%s restarted after %s", p->name, why);
+    } else {
+        fl_event(s, FL_EV_GAVE_UP, i, 0, p->restarts, "%s could not be restarted", p->name);
     }
 }
 
@@ -178,9 +184,15 @@ static void check_heartbeats(void)
     }
 }
 
-static void on_heartbeat(int i)
+/* A heartbeat carries the sender's pid. A pulse still queued from a process that has
+ * since died no longer matches, so it can't mark the replacement as ready. */
+static void on_heartbeat(pid_t pid)
 {
-    if (i < 0 || i >= s->nproc) {
+    int i = 0;
+    while (i < s->nproc && s->proc[i].pid != pid) {
+        i++;
+    }
+    if (i == s->nproc) {
         return;
     }
     struct fl_proc *p = &s->proc[i];
@@ -290,7 +302,7 @@ int main(int argc, char **argv)
         }
         switch (msg.pulse.code) {
         case FL_PULSE_HEARTBEAT:
-            on_heartbeat(msg.pulse.value.sival_int);
+            on_heartbeat((pid_t)msg.pulse.value.sival_int);
             break;
         case FL_PULSE_TICK:
             check_heartbeats();

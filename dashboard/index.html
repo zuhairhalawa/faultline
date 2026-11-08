@@ -160,7 +160,7 @@
     <div class="cap">
       <span><b>Flow</b> mL/h, last 20 s</span>
       <span>Dashed line: prescribed</span>
-      <span class="late-key"><b>Control loop</b> lateness, 2 ms limit</span>
+      <span class="late-key"><b>Control loop</b> lateness, 5 ms deadline</span>
     </div>
     <canvas id="trace"></canvas>
     <canvas id="late"></canvas>
@@ -208,7 +208,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const WINDOW_MS = 20000, Y_MAX = 160, LATE_MAX_US = 20000, LATE_LIMIT_US = 2000;
+const WINDOW_MS = 20000, Y_MAX = 160, LATE_MAX_US = 20000, LATE_LIMIT_US = 5000;
 const samples = [];          // {t, flow, target, late}
 const marks = [];            // {t, label, kind}
 let state = null, lastT = 0, clockOffset = null;
@@ -230,7 +230,7 @@ async function inject(cmd) {
 /* ---------- state ---------- */
 function onState(s) {
   state = s; lastT = s.t_ms;
-  samples.push({ t: s.t_ms, flow: s.plant.flow_mlh, target: s.ctrl.target_mlh, late: s.ctrl.last_late_us });
+  samples.push({ t: s.t_ms, flow: s.plant.flow_mlh, target: s.ctrl.target_mlh, late: s.ctrl.win_late_us ?? s.ctrl.last_late_us });
   while (samples.length && samples[0].t < s.t_ms - WINDOW_MS * 2) samples.shift();
 
   $('flow').firstChild.nodeValue = s.plant.flow_mlh.toFixed(1);

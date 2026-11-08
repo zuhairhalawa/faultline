@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Read-only status of the QNX QEMU target.
-source "$HOME/qnx800/qnxsdp-env.sh" > /dev/null
+source "${QNX_SDP:-$HOME/qnx800}/qnxsdp-env.sh" > /dev/null
 cd "$HOME/fl-vm"
 pgrep -a qemu-system | cut -c1-200
 echo "getip: $(MKQNXIMAGE_NOPROMPT=1 mkqnximage --getip 2>&1 | tail -3)"

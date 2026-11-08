@@ -13,7 +13,7 @@
 #include <sys/neutrino.h>
 
 #define FL_SHM_NAME      "/fl-state"
-#define FL_MAGIC         0x464c5432u /* "FLT2" */
+#define FL_MAGIC         0x464c5433u /* "FLT3" */
 #define FL_SUPERVISOR    "fl-supervisor"
 #define FL_FLOW_NAME     "fl-flow"
 #define FL_MOTOR_PATH    "/dev/fl/motor"
@@ -26,6 +26,7 @@
 #define FL_PULSE_HEARTBEAT (_PULSE_CODE_MINAVAIL + 1)
 #define FL_PULSE_TICK      (_PULSE_CODE_MINAVAIL + 2)
 #define FL_PULSE_CHILD     (_PULSE_CODE_MINAVAIL + 3)
+#define FL_PULSE_REPLY     (_PULSE_CODE_MINAVAIL + 4)   /* flow-sensor: time to send a delayed reply */
 
 /* Message the controller sends to the flow sensor. Kept outside the _IO_* range. */
 #define FL_MSG_FLOW_READ 0x4601
@@ -87,6 +88,7 @@ struct fl_proc {
 };
 
 struct fl_event {
+    volatile uint32_t seq;   /* event number + 1, stored last; 0 while the slot is being written */
     uint64_t t_ns;
     int32_t  type;
     int32_t  proc;      /* index into proc[], or -1 */
@@ -115,7 +117,8 @@ struct fl_state {
     volatile uint64_t ctrl_late;        /* ticks later than FL_LATE_LIMIT_NS */
     volatile int64_t  ctrl_last_late_ns;
     volatile int64_t  ctrl_max_late_ns;
-    volatile uint64_t sensor_ok_ns;     /* time of last good sensor reading */
+    volatile int64_t  ctrl_win_late_ns; /* worst tick since fl-bridge last sampled it (it resets this) */
+    volatile uint64_t sensor_ok_ns;    /* time of last good sensor reading */
     volatile uint64_t sensor_fail;      /* failed reads */
 
     /* Fault settings, written by fl-inject, read by the faulted process. */
@@ -132,7 +135,7 @@ struct fl_state {
 
 /* Control loop timing. */
 #define FL_CTRL_PERIOD_NS   10000000LL  /* 100 Hz */
-#define FL_LATE_LIMIT_NS     2000000LL  /* a tick more than 2 ms late counts as a miss */
+#define FL_LATE_LIMIT_NS     5000000LL  /* the deadline: a tick more than 5 ms late counts as a miss */
 #define FL_SENSOR_TIMEOUT_NS 5000000ULL /* 5 ms to answer a read */
 #define FL_HOLD_GRACE_NS   200000000ULL /* hold last speed for 200 ms, then stop */
 
@@ -143,7 +146,7 @@ void fl_event(struct fl_state *s, int type, int proc, int pid, int arg, const ch
 int  fl_find_proc(struct fl_state *s, const char *name);
 int  fl_my_index(void);                 /* from FL_PROC in the environment, -1 if unset */
 int  fl_heartbeat_open(void);           /* connection to the supervisor, -1 on failure */
-void fl_heartbeat(int *coid, int index);
+void fl_heartbeat(int *coid, int index); /* the pulse carries our pid, so a stale pulse can't vouch for a replacement */
 void fl_set_fifo(int prio);
 int  fl_periodic_pulse(int coid, int code, uint64_t period_ns, timer_t *out);
 

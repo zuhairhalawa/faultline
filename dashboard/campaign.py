@@ -43,6 +43,12 @@ class Runner:
                     "results": list(self.results), "report": self.report, "error": self.error,
                     "campaigns": sorted(p.stem for p in self.campaign_dir.glob("*.json"))}
 
+    def clear(self):
+        """Forgets the last run's results (the target was restarted, so they no longer apply)."""
+        with self.lock:
+            if not self.running:
+                self.results, self.report, self.error, self.title = [], None, None, None
+
     def start(self, name):
         path = self.campaign_dir / (Path(name).name + ".json")
         if not path.exists():
@@ -115,16 +121,29 @@ class Runner:
 
         failure = next((e for e in in_window if e["type"] in (EV_DEATH, EV_HANG) and e["proc"] == proc), None)
         ready = next((e for e in in_window if e["type"] == EV_READY and e["proc"] == proc), None)
-        lates = [e["arg"] / 1000 for e in in_window if e["type"] == EV_LATE]
+        late_runs = [e for e in in_window if e["type"] == EV_LATE]
         alarm = next((e for e in in_window if e["type"] == EV_ALARM), None)
         hold = next((e for e in in_window if e["type"] == EV_HOLD), None)
+
+        # Worst lateness over every tick in the window, from the controller's own measurement
+        # (sampled every 50 ms), plus any late run it logged. If the controller itself was
+        # the process restarted, its outage isn't a late tick, so there is no figure to give.
+        worst_us = self.target.worst_late_us(t0, t0 + window)
+        candidates = [e["arg"] / 1000 for e in late_runs]
+        if worst_us is not None:
+            candidates.append(worst_us / 1000)
+        worst = max(candidates, default=None)
+        late_note = None
+        if proc == "pump-ctrl" and failure:
+            worst, late_note = None, "n/a (controller restarted)"
 
         m = {
             "detect_ms": round(failure["t_ms"] - t0, 2) if failure else None,
             "detected_as": {EV_DEATH: "crash", EV_HANG: "hang"}.get(failure["type"]) if failure else None,
             "recover_ms": round(ready["arg"] / 1000, 2) if ready else None,
-            "max_late_ms": round(max(lates), 2) if lates else 0.0,
-            "late_ticks": len(lates),
+            "max_late_ms": round(worst, 2) if worst is not None else None,
+            "late_note": late_note,
+            "late_ticks": len(late_runs),
             "hold_ms": round(hold["t_ms"] - t0, 2) if hold else None,
             "alarm_ms": round(alarm["t_ms"] - t0, 2) if alarm else None,
         }
@@ -141,7 +160,7 @@ class Runner:
                 reasons.append("did not recover within the window")
             elif m["recover_ms"] > lim["recover_ms"]:
                 reasons.append(f"recovered in {m['recover_ms']} ms, limit {lim['recover_ms']} ms")
-        if "max_late_ms" in lim and m["max_late_ms"] > lim["max_late_ms"]:
+        if "max_late_ms" in lim and m["max_late_ms"] is not None and m["max_late_ms"] > lim["max_late_ms"]:
             reasons.append(f"control tick {m['max_late_ms']} ms late, limit {lim['max_late_ms']} ms")
         if lim.get("alarm") is False and m["alarm_ms"] is not None:
             reasons.append(f"pump alarm raised at {m['alarm_ms']} ms")
@@ -186,7 +205,7 @@ class Runner:
                 "held at " + fmt(m.get("hold_ms")) if m.get("hold_ms") is not None else "kept running")
             det = (f"{m['detected_as']} in {m['detect_ms']} ms" if m.get("detect_ms") is not None else "–")
             md.append(f"| {r['title']} | `{r['fault']}` | {det} | {fmt(m.get('recover_ms'))} | "
-                      f"{fmt(m.get('max_late_ms'))} | {pump} | {fmt(m.get('dose_err_pct'), '%')} | **{r['verdict']}** |")
+                      f"{m.get('late_note') or fmt(m.get('max_late_ms'))} | {pump} | {fmt(m.get('dose_err_pct'), '%')} | **{r['verdict']}** |")
         md += ["", "## Details", ""]
         for r in results:
             md.append(f"### {r['title']}: {r['verdict']}")
@@ -200,6 +219,7 @@ class Runner:
                 md += [f"- {x}" for x in r["reasons"]]
             md += ["", "```"] + r.get("events", []) + ["```", ""]
         md += ["## Notes", "",
+               "Worst tick late covers every 100 Hz control tick in the step's window; the deadline is 5 ms.",
                "Times come from the QNX target's CLOCK_MONOTONIC. Under QEMU they are approximate:",
                "the emulator doesn't run in real time, so the same build on real hardware gives tighter numbers.",
                "The pump is a simulation used to show recovery behaviour, not a medical device.", ""]
@@ -225,7 +245,7 @@ def _html(title, results, ok, started, host, spec):
         why = "<br>".join(esc(x) for x in r["reasons"]) or ("breach caught" if r["verdict"] == "CAUGHT" else "")
         rows.append(
             f"<tr class='{r['verdict'].lower()}'><td>{esc(r['title'])}</td><td><code>{esc(r['fault'])}</code></td>"
-            f"<td>{esc(det)}</td><td>{cell(m.get('recover_ms'))}</td><td>{cell(m.get('max_late_ms'))}</td>"
+            f"<td>{esc(det)}</td><td>{cell(m.get('recover_ms'))}</td><td>{esc(m.get('late_note') or cell(m.get('max_late_ms')))}</td>"
             f"<td>{esc(pump)}</td><td>{cell(m.get('dose_err_pct'), '%')}</td>"
             f"<td class='v'>{r['verdict']}</td><td class='why'>{why}</td></tr>")
     passed = sum(r["verdict"] in ("PASS", "CAUGHT") for r in results)
@@ -248,5 +268,5 @@ td.why{{color:#4c5a66;font-size:13px}} .note{{color:#4c5a66;font-size:13px;margi
 <span class="overall">{'PASS' if ok else 'FAIL'}: {passed} of {len(results)} steps as required</span>
 <table><tr><th>Step</th><th>Fault</th><th>Detected</th><th>Back in service</th><th>Worst tick late</th><th>Pump</th><th>Dose error</th><th>Verdict</th><th></th></tr>
 {''.join(rows)}</table>
-<p class="note">Times come from the QNX target's CLOCK_MONOTONIC. Under QEMU they are approximate: the emulator doesn't run in real time, so the same build on real hardware gives tighter numbers. The pump is a simulation used to show recovery behaviour, not a medical device.</p>
+<p class="note">Worst tick late covers every 100 Hz control tick in the step's window; the deadline is 5 ms. Times come from the QNX target's CLOCK_MONOTONIC. Under QEMU they are approximate: the emulator doesn't run in real time, so the same build on real hardware gives tighter numbers. The pump is a simulation used to show recovery behaviour, not a medical device.</p>
 </main></body></html>"""

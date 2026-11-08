@@ -53,8 +53,11 @@ struct fl_state *fl_map(int create)
 
 void fl_event(struct fl_state *s, int type, int proc, int pid, int arg, const char *fmt, ...)
 {
+    /* Several processes write events. Claim a slot, mark it unfinished, fill it, then
+     * publish its number last, so a reader never takes a half-written event. */
     uint32_t slot = __atomic_fetch_add(&s->ev_head, 1, __ATOMIC_ACQ_REL);
     struct fl_event *e = &s->ev[slot % FL_EVENTS];
+    __atomic_store_n(&e->seq, 0, __ATOMIC_RELEASE);
     e->t_ns = fl_now_ns();
     e->type = type;
     e->proc = proc;
@@ -64,6 +67,7 @@ void fl_event(struct fl_state *s, int type, int proc, int pid, int arg, const ch
     va_start(ap, fmt);
     vsnprintf(e->text, sizeof(e->text), fmt, ap);
     va_end(ap);
+    __atomic_store_n(&e->seq, slot + 1, __ATOMIC_RELEASE);
 }
 
 int fl_find_proc(struct fl_state *s, const char *name)
@@ -99,7 +103,7 @@ void fl_heartbeat(int *coid, int index)
             return;
         }
     }
-    if (MsgSendPulse(*coid, -1, FL_PULSE_HEARTBEAT, index) == -1) {
+    if (MsgSendPulse(*coid, -1, FL_PULSE_HEARTBEAT, getpid()) == -1) {
         name_close(*coid);
         *coid = -1;
     }
