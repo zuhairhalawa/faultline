@@ -53,6 +53,8 @@ Two of the things it found were problems in the pump's own design, and both are 
    - Fix: the supervisor sets `RLIMIT_CORE` to 0 for its children. Set `FL_CORE=1` to keep dumps while debugging.
    - Detection now takes **0.5 to 1 ms**.
 
+The first finding is also a hands-on codelab: [Why your QNX TimerTimeout doesn't time out](codelab/README.md). It builds a tiny client and server, reproduces the bug in a few minutes, and walks through both fixes.
+
 ## How it works
 
 Everything on the target is C, built with `qcc` from QNX SDP 8.0.
