@@ -5,12 +5,13 @@ CC       = qcc -Vgcc_nto$(PLATFORM)
 CFLAGS   = -O2 -Wall -Wextra -std=gnu11
 BIN      = build/$(PLATFORM)
 
-all: $(BIN)/server $(BIN)/client
+# Binaries get a cl- prefix so `slay` on a shared target can't hit anything else.
+all: $(BIN)/cl-server $(BIN)/cl-client
 
 $(BIN):
 	mkdir -p $@
 
-$(BIN)/%: %.c ping.h | $(BIN)
+$(BIN)/cl-%: %.c ping.h | $(BIN)
 	$(CC) $(CFLAGS) -o $@ $<
 
 clean:
