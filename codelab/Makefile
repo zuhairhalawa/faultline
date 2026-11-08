@@ -6,7 +6,7 @@ CFLAGS   = -O2 -Wall -Wextra -std=gnu11
 BIN      = build/$(PLATFORM)
 
 # Binaries get a cl- prefix so `slay` on a shared target can't hit anything else.
-all: $(BIN)/cl-server $(BIN)/cl-client
+all: $(BIN)/cl-server $(BIN)/cl-client $(BIN)/cl-server-todo
 
 $(BIN):
 	mkdir -p $@

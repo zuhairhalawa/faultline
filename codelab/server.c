@@ -78,8 +78,9 @@ int main(int argc, char **argv)
                 rcvid_t who = (rcvid_t)msg.pulse.value.sival_long;
                 if (fixed && who == held) {
                     timer_settime(reply_timer, 0, &off, NULL);
-                    /* We can't tell a timeout from a signal here; ETIMEDOUT fits this codelab.
-                     * Servers that are interrupted by signals usually answer EINTR. */
+                    /* On a name_attach() channel a timeout and a signal both arrive as this
+                     * one pulse code. ETIMEDOUT fits this codelab, whose client uses timeouts;
+                     * a server whose clients are interrupted by signals would usually answer EINTR. */
                     MsgError(held, ETIMEDOUT);    /* this is what actually frees the client */
                     held = 0;
                     printf("server: client gave up waiting; released it with ETIMEDOUT\n");
@@ -90,6 +91,9 @@ int main(int argc, char **argv)
                 break;
             }
             case PULSE_REPLY_DUE:
+                /* Note: a PULSE_REPLY_DUE already queued when the unblock pulse cancelled the
+                 * timer would reach the next held request early. With one client pinging every
+                 * 100 ms that can't happen here; a busier server would tag each arming. */
                 if (held) {
                     if (MsgReply(held, EOK, &held_reply, sizeof(held_reply)) == -1) perror("MsgReply");
                     held = 0;

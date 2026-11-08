@@ -105,7 +105,10 @@ int main(int argc, char **argv)
     }
     timeout_ns = (uint64_t)timeout_ms * 1000000ULL;
 
-    coid = name_open(PING_NAME, 0);
+    /* The server may have only just been started; give it up to a second to register. */
+    for (int tries = 0; (coid = name_open(PING_NAME, 0)) == -1 && tries < 100; tries++) {
+        usleep(10000);
+    }
     if (coid == -1) { perror("name_open " PING_NAME " (is cl-server running?)"); return 1; }
     printf("client: pid %d, timeout %d ms\n", getpid(), timeout_ms);
     fflush(stdout);

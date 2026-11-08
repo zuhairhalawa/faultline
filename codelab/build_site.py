@@ -7,11 +7,13 @@ Writes <output-dir>/<id>/index.html in the same structure `claat export -f html`
 produces (google-codelab elements), using Google's hosted codelab scripts, plus
 <output-dir>/index.html, which forwards to the codelab. Python standard library
 only. It understands the Markdown subset the codelab uses: headings, paragraphs,
-bullet and numbered lists (with indented content), fenced code, `aside positive`
-and `aside negative` notes, and inline code, bold and links.
+bullet and numbered lists (with indented content), fenced code, images on their
+own line (copied from codelab/img), `aside positive` and `aside negative` notes,
+and inline code, bold and links.
 """
 import html
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -60,6 +62,11 @@ def render(lines):
                 cls = f' language="language-{lang}" class="language-{lang}"' if lang else ""
                 out.append(f"<pre><code{cls}>{code}</code></pre>")
             i = j + 1
+        elif re.match(r"^!\[[^\]]*\]\([^)\s]+\)\s*$", line):
+            alt, src = re.match(r"^!\[([^\]]*)\]\(([^)\s]+)\)", line).groups()
+            out.append(f'<p class="image-container"><img alt="{html.escape(alt)}" src="{html.escape(src)}" '
+                       f'style="max-width: 100%"></p>')
+            i += 1
         elif line.startswith("### "):
             out.append(f"<h2 is-upgraded>{inline(line[4:].strip())}</h2>")
             i += 1
@@ -95,7 +102,7 @@ def render(lines):
             out.append(f"<{tag}{attr}>\n" + "\n".join(lis) + f"\n</{tag}>")
         else:
             j = i
-            while j < len(lines) and lines[j].strip() and not re.match(r"^(```|### |\* |\d+\. |aside )", lines[j]):
+            while j < len(lines) and lines[j].strip() and not re.match(r"^(```|### |\* |\d+\. |aside |!\[)", lines[j]):
                 j += 1
             out.append("<p>" + inline(" ".join(l.strip() for l in lines[i:j])) + "</p>")
             i = max(j, i + 1)
@@ -164,6 +171,8 @@ def main():
     info, steps = parse(SOURCE.read_text(encoding="utf-8"))
     (out / info["id"]).mkdir(parents=True, exist_ok=True)
     (out / info["id"] / "index.html").write_text(page(info, steps), encoding="utf-8")
+    if (HERE / "img").is_dir():
+        shutil.copytree(HERE / "img", out / info["id"] / "img", dirs_exist_ok=True)
     (out / "index.html").write_text(
         f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url={info["id"]}/">'
         f'<title>{html.escape(info["title"])}</title><a href="{info["id"]}/">{html.escape(info["title"])}</a>\n',
