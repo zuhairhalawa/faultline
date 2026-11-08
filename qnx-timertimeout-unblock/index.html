@@ -4,7 +4,7 @@
   <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1.0, user-scalable=yes">
   <meta name="theme-color" content="#4F7DC9">
   <meta charset="UTF-8">
-  <meta name="description" content="Reproduce a REPLY-blocked client that ignores its 5 ms timeout, learn what _NTO_CHF_UNBLOCK does, and fix it on the server with deferred replies and on the client with a worker thread.">
+  <meta name="description" content="Watch a 5 ms TimerTimeout fail to free a REPLY-blocked client, learn what _NTO_CHF_UNBLOCK does, then fix it yourself: deferred replies in the server, and a worker thread in the client.">
   <title>Why Your QNX TimerTimeout Doesn&#x27;t Time Out</title>
   <link rel="stylesheet" href="//fonts.googleapis.com/css?family=Source+Code+Pro:400|Roboto:400,300,400italic,500,700|Roboto+Mono">
   <link rel="stylesheet" href="//fonts.googleapis.com/icon?family=Material+Icons">
@@ -18,16 +18,18 @@
                   title="Why Your QNX TimerTimeout Doesn&#x27;t Time Out"
                   environment="web"
                   feedback-link="https://github.com/zuhairhalawa/faultline/issues">
-      <google-codelab-step label="Introduction" duration="2">
+      <google-codelab-step label="Introduction" duration="3">
 <h2 is-upgraded>Overview</h2>
-<p>You will build a tiny QNX message-passing server and client, and watch a 5 ms timeout fail to stop the client from waiting 30 ms, then forever. Then you will fix it twice: on the server, so a slow server honours the client's timeout, and on the client, so even a frozen server can't stall a real-time loop.</p>
-<p>This came out of <a href="https://github.com/zuhairhalawa/faultline" target="_blank">Faultline</a>, a fault-injection tool for QNX 8.0. A pump controller that read its sensor with a 5 ms timeout ran 77 ms late when the sensor froze.</p>
-<h2 is-upgraded>What you'll learn</h2>
+<p>A client sends a request with a 5 ms timeout. The server takes 30 ms. How long does the client wait?</p>
+<p>On QNX, the answer is often <strong>30 ms</strong>. And if the server freezes, the client may wait forever, even through <code>SIGKILL</code>.</p>
+<p>In this codelab you will build a tiny message-passing server and client and watch that happen on a real QNX 8.0 target. Then you will fix it twice: you write the server-side fix yourself, and you see how a control loop protects itself from a server that can't answer at all.</p>
+<p>This behaviour was found by <a href="https://github.com/zuhairhalawa/faultline" target="_blank">Faultline</a>, a fault-injection tool for QNX 8.0: a 100 Hz pump controller that read its sensor with a 5 ms timeout ran 77 ms late when the sensor froze.</p>
+<h2 is-upgraded>What you'll be able to do</h2>
 <ul>
-<li>What <code>_NTO_CHF_UNBLOCK</code> does, and why every <code>name_attach()</code> server has it.</li>
-<li>Why <code>TimerTimeout()</code> can't release a REPLY-blocked client by itself.</li>
-<li>How to answer <code>_PULSE_CODE_UNBLOCK</code>, and how to make a slow reply a deferred reply instead of a sleep.</li>
-<li>How to keep a periodic loop on time when the server it depends on stops answering.</li>
+<li>Explain what <code>_NTO_CHF_UNBLOCK</code> does, and why every <code>name_attach()</code> server has it.</li>
+<li>Predict when <code>TimerTimeout()</code> will release a client, and when it can't.</li>
+<li>Write a server that keeps slow requests as <strong>deferred replies</strong> and answers <code>_PULSE_CODE_UNBLOCK</code>.</li>
+<li>Structure a periodic loop so a frozen server can't make it miss deadlines.</li>
 </ul>
 <h2 is-upgraded>Prerequisites</h2>
 <ul>
@@ -35,43 +37,50 @@
 <li><strong>A QNX 8.0 target you can reach with SSH as root</strong>, for example a QEMU image from <code>mkqnximage --type=qemu</code>. Every output in this codelab comes from QNX 8.0 x86_64 in QEMU with KVM; your timings will differ a little.</li>
 <li>Comfort with C. No prior QNX message-passing experience is needed.</li>
 </ul>
+<aside class="special"><p>Throughout this codelab you'll see <strong>Predict</strong> boxes. Commit to an answer before you run the command. Guessing wrong, then seeing why, is how this sticks.</p></aside>
       </google-codelab-step>
       <google-codelab-step label="Build and copy to the target" duration="5">
 <ol type="1">
-<li><strong>Get the code.</strong> The codelab's programs are in the <code>codelab</code> folder of the Faultline repository:<pre><code language="language-bash" class="language-bash">git clone https://github.com/zuhairhalawa/faultline.git
-cd faultline/codelab</code></pre>
-<p>It holds four files: <code>ping.h</code> (the message), <code>server.c</code>, <code>client.c</code> and a <code>Makefile</code>.</p></li>
+<li><strong>Get the code.</strong> It's in the <code>codelab</code> folder of the Faultline repository:<pre><code language="language-bash" class="language-bash">git clone https://github.com/zuhairhalawa/faultline.git
+cd faultline/codelab</code></pre></li>
 <li><strong>Build with the QNX toolchain:</strong><pre><code language="language-bash" class="language-bash">source ~/qnx800/qnxsdp-env.sh
 make</code></pre>
-<p>This builds <code>build/x86_64/cl-server</code> and <code>build/x86_64/cl-client</code>. For a Raspberry Pi, run <code>make PLATFORM=aarch64le</code> and use <code>build/aarch64le/</code> below.</p></li>
+<p>This builds three programs into <code>build/x86_64/</code>. For a Raspberry Pi, run <code>make PLATFORM=aarch64le</code> and use <code>build/aarch64le/</code> below.</p></li>
 <li><strong>Copy them to the target:</strong><pre><code language="language-bash" class="language-bash">ssh root@&lt;target-ip&gt; mkdir -p /data/cl
-scp build/x86_64/cl-server build/x86_64/cl-client root@&lt;target-ip&gt;:/data/cl/</code></pre></li>
+scp build/x86_64/cl-* root@&lt;target-ip&gt;:/data/cl/</code></pre></li>
 <li><strong>Log in to the target</strong> and go to the folder:<pre><code language="language-bash" class="language-bash">ssh root@&lt;target-ip&gt;
 cd /data/cl</code></pre></li>
 </ol>
-<p>Each step runs the server in the background (<code>&amp;</code>) and the client in the same shell, so you can signal both. <code>$!</code> holds the pid of the last background process; the steps save it in <code>SP</code> (server) and <code>CP</code> (client).</p>
-<h2 is-upgraded>The two programs</h2>
+<h2 is-upgraded>The programs</h2>
 <ul>
-<li><code>cl-server [-d DELAY_MS] [-u]</code> registers the name <code>cl-ping</code> with <code>name_attach()</code> and answers pings. <code>-d</code> makes every answer late. <code>-u</code> switches on the fix you'll write about in step 6.</li>
 <li><code>cl-client [-t TIMEOUT_MS] [-n COUNT] [-w]</code> sends a ping every 100 ms. Each <code>MsgSend()</code> is bounded by <code>TimerTimeout()</code> (5 ms by default) for both the SEND and REPLY states. <code>-w</code> is the control loop from step 7.</li>
+<li><code>cl-server [-d DELAY_MS] [-u]</code> registers the name <code>cl-ping</code> with <code>name_attach()</code> and answers pings. <code>-d</code> makes every answer late. <code>-u</code> turns on the fix.</li>
+<li><code>cl-server-todo</code> is the same server with the fix left out. You complete it in step 6.</li>
 </ul>
-<p>Between steps, stop everything with:</p>
-<pre><code language="language-bash" class="language-bash">slay -s SIGCONT cl-server; slay -s SIGKILL cl-server cl-client</code></pre>
+<p>Each step runs the server in the background (<code>&amp;</code>) and the client in the same shell, so you can signal both. <code>$!</code> holds the pid of the last background process; the steps save it in <code>SP</code> (server) and <code>CP</code> (client). The <code>sleep 1</code> after starting a server gives it time to start and register its name before the next command signals it or connects to it. Between steps, stop everything with:</p>
+<pre><code language="language-bash" class="language-bash">slay -s SIGCONT cl-server cl-server-todo 2&gt;/dev/null; slay -s SIGKILL cl-server cl-server-todo cl-client 2&gt;/dev/null</code></pre>
       </google-codelab-step>
-      <google-codelab-step label="A healthy server" duration="2">
-<p>Start the server and send three pings:</p>
-<pre><code language="language-bash" class="language-bash">./cl-server &amp; SP=$!
+      <google-codelab-step label="A healthy server" duration="3">
+<pre><code language="language-bash" class="language-bash">./cl-server &amp; SP=$!; sleep 1
 ./cl-client -n 3</code></pre>
 <pre><code><span class="nocode">server: pid 11907101, name cl-ping, delay 0 ms, naive (sleeps, then replies)
 client: pid 11919390, timeout 5 ms
 ping  1: reply after 0.0 ms
 ping  2: reply after 0.0 ms
 ping  3: reply after 0.1 ms</span></code></pre>
-<p>Nothing surprising yet. The client sends with <code>MsgSend()</code>, the server receives with <code>MsgReceive()</code> and answers with <code>MsgReply()</code>, and the whole round trip takes well under a millisecond.</p>
+<h2 is-upgraded>What just happened</h2>
+<p>QNX message passing is synchronous. One ping goes through three states:</p>
+<ol type="1">
+<li>The client calls <code>MsgSend()</code>. Until the server receives the message, the client is <strong>SEND-blocked</strong>.</li>
+<li>The server's <code>MsgReceive()</code> returns the message and an <code>rcvid</code> that identifies this client. Now the client is <strong>REPLY-blocked</strong>: it waits until the server answers that <code>rcvid</code>.</li>
+<li>The server calls <code>MsgReply(rcvid, ...)</code>. The kernel copies the answer into the client's buffer, and the client runs again.</li>
+</ol>
+<p><code>TimerTimeout()</code> asks the kernel to stop waiting after 5 ms, in either blocked state. Keep those two states in mind; the rest of the codelab is about the second one.</p>
       </google-codelab-step>
-      <google-codelab-step label="A slow server ignores your timeout" duration="5">
-<p>Start the server so that it answers 30 ms late. The client still has a 5 ms timeout.</p>
-<pre><code language="language-bash" class="language-bash">./cl-server -d 30 &amp; SP=$!
+      <google-codelab-step label="A slow server ignores your timeout" duration="6">
+<p>Now the server answers 30 ms late. The client still sets a 5 ms timeout on every <code>MsgSend()</code>.</p>
+<aside class="special"><p><strong>Predict:</strong> what will <code>ping 1</code> print? (a) <code>Connection timed out after ~5 ms</code>, (b) <code>reply after ~30 ms</code>, (c) nothing, it hangs.</p></aside>
+<pre><code language="language-bash" class="language-bash">./cl-server -d 30 &amp; SP=$!; sleep 1
 ./cl-client -n 3</code></pre>
 <pre><code><span class="nocode">server: pid 11956253, name cl-ping, delay 30 ms, naive (sleeps, then replies)
 client: pid 11968542, timeout 5 ms
@@ -81,98 +90,98 @@ server: got _PULSE_CODE_UNBLOCK (ignored; already replied)
 ping  2: reply after 31.2 ms
 server: got _PULSE_CODE_UNBLOCK (ignored; already replied)
 ping  3: reply after 31.3 ms</span></code></pre>
-<p>The timeout fired at 5 ms, yet every call took 30 ms, and the server got one <code>_PULSE_CODE_UNBLOCK</code> per ping. Here is why:</p>
+<p>The answer is <strong>(b)</strong>. The timeout fired at 5 ms, yet every call took 30 ms, and the server received one <code>_PULSE_CODE_UNBLOCK</code> per ping.</p>
+<p class="image-container"><img alt="A slow server and a 5 ms TimerTimeout: the client stays REPLY-blocked for 30 ms" src="img/unblock-naive.svg" style="max-width: 100%"></p>
+<h2 is-upgraded>Why</h2>
 <ol type="1">
 <li><code>name_attach()</code> creates its channel with <code>_NTO_CHF_UNBLOCK</code> (along with <code>_NTO_CHF_DISCONNECT</code> and <code>_NTO_CHF_COID_DISCONNECT</code>). See <a href="https://www.qnx.com/developers/docs/8.0/com.qnx.doc.neutrino.lib_ref/topic/n/name_attach.html" target="_blank"><code>name_attach()</code></a> and <a href="https://www.qnx.com/developers/docs/8.0/com.qnx.doc.neutrino.lib_ref/topic/c/channelcreate.html" target="_blank"><code>ChannelCreate()</code></a>.</li>
-<li>Once the server has received a message, the client is <strong>REPLY-blocked</strong>. If the client then wants to stop waiting (its <code>TimerTimeout()</code> fires, or it gets a signal), a channel with <code>_NTO_CHF_UNBLOCK</code> doesn't let the kernel release it. The kernel sends the server a <code>_PULSE_CODE_UNBLOCK</code> pulse instead, and the client stays REPLY-blocked until the server replies or calls <code>MsgError()</code>.</li>
-<li>This server sleeps while it holds the request, so it only sees the pulse after it has already replied. The pulse arrives too late to matter.</li>
+<li>On such a channel, when a <strong>REPLY-blocked</strong> client wants to stop waiting (its timeout fires, or it gets a signal), the kernel doesn't release it. It sends the server a <code>_PULSE_CODE_UNBLOCK</code> pulse and leaves the client REPLY-blocked until the server replies or calls <code>MsgError()</code>.</li>
+<li>This server sleeps while it holds the request, so the pulse waits in its queue until after it has replied. Too late to matter.</li>
 </ol>
-<aside class="special"><p>The flag exists for a good reason: a server may have work in flight for that client, such as a DMA transfer or a reply buffer, and needs to clean it up before the client goes away. But it means <strong>the server decides when your timeout takes effect</strong>.</p></aside>
+<p>The flag exists for a good reason: a server may have work in flight for that client, such as a DMA transfer or a reply buffer, and must clean it up before the client goes away. But it means <strong>the server decides when your timeout takes effect.</strong></p>
       </google-codelab-step>
-      <google-codelab-step label="A frozen server holds you forever" duration="5">
-<p>Start a healthy server, freeze it with <code>SIGSTOP</code>, then start the client in the background and look at it a second later:</p>
-<pre><code language="language-bash" class="language-bash">./cl-server &amp; SP=$!
+      <google-codelab-step label="A frozen server holds you forever" duration="6">
+<p>Freeze the server with <code>SIGSTOP</code> before the client even starts.</p>
+<aside class="special"><p><strong>Predict:</strong> the server is stopped before the client sends anything. Will the client be SEND-blocked (where its timeout works) or REPLY-blocked?</p></aside>
+<pre><code language="language-bash" class="language-bash">./cl-server &amp; SP=$!; sleep 1
 kill -STOP $SP
 ./cl-client -n 1 &amp; CP=$!
 sleep 1
 pidin -p cl-client -F &quot;%a %b %N %p %J %B&quot;</code></pre>
 <pre><code><span class="nocode">     pid tid name               prio STATE          Blocked
 12017694   1 cl-client           10r REPLY          12005405</span></code></pre>
-<p>The client is REPLY-blocked on the server's pid, and it stays there. If you run <code>pidin</code> straight away, you may catch it briefly REPLY-blocked on pid 1 while <code>name_open()</code> finishes; that's why the step waits a second.</p>
-<p>Notice the client went into <code>REPLY</code>, not <code>SEND</code>, even though the server was frozen before the client started. The server's thread was waiting in <code>MsgReceive()</code> when it was stopped, and the kernel still handed it the message. So the client can't even rely on staying in <code>SEND</code>, where its timeout would have worked.</p>
+<p><strong>REPLY</strong>, on the server's pid. The server's thread was already waiting in <code>MsgReceive()</code> when it was stopped, and the kernel still handed it the message. So the client is past the point where its timeout could have saved it. (If you run <code>pidin</code> straight away, you may briefly catch the client REPLY-blocked on pid 1 while <code>name_open()</code> finishes; that's why the step waits a second.)</p>
 <h2 is-upgraded>Try to get the client out</h2>
-<p>These are alternatives: after each one, clean up and repeat the commands above.</p>
+<p>These are alternatives. After each one, clean up and repeat the commands above.</p>
+<aside class="special"><p><strong>Predict:</strong> which of these four frees the client?</p></aside>
 <ul>
-<li><code>kill -TERM $CP</code> does nothing. <code>pidin</code> still shows the client in <code>REPLY</code>.</li>
-<li><code>kill -KILL $CP</code> does nothing either. On QNX 8.0 in our runs, <code>pidin</code> still showed the client REPLY-blocked after <code>SIGKILL</code>.</li>
-<li><code>kill -CONT $SP</code> lets the server run. It answers the pending request, and only then can the client finish, or act on a signal you sent it.</li>
-<li><code>kill -KILL $SP</code> frees the client with an error:<pre><code><span class="nocode">ping  1: No such process after 1005.9 ms</span></code></pre>
+<li><code>kill -TERM $CP</code>: nothing happens. <code>pidin</code> still shows the client in <code>REPLY</code>.</li>
+<li><code>kill -KILL $CP</code>: nothing happens either. On QNX 8.0 in our runs, <code>pidin</code> still showed the client REPLY-blocked after <code>SIGKILL</code>.</li>
+<li><code>kill -CONT $SP</code>: the server runs, answers the pending request, and only then can the client finish or act on a signal you sent it.</li>
+<li><code>kill -KILL $SP</code>: the client is freed with an error:<pre><code><span class="nocode">ping  1: No such process after 1005.9 ms</span></code></pre>
 <p>The request in flight fails with <code>ESRCH</code>. Any later <code>MsgSend()</code> on the same connection fails at once with <code>EBADF</code>, because the connection is gone.</p></li>
 </ul>
 <aside class="warning"><p>A frozen server can hold its clients through a timeout, <code>SIGTERM</code> and even <code>SIGKILL</code>. Only resuming or killing the server releases them.</p></aside>
       </google-codelab-step>
-      <google-codelab-step label="Fix the server: deferred replies" duration="7">
-<p>A server that can be slow must never sleep while holding a request. It should:</p>
+      <google-codelab-step label="Your turn: fix the server" duration="12">
+<p>A server that can be slow must never sleep while it holds a request. Instead:</p>
 <ol type="1">
-<li>Remember the <code>rcvid</code> and go straight back to <code>MsgReceive()</code>. This is a <strong>deferred reply</strong>.</li>
-<li>Arm a timer that sends itself a pulse when the answer is due, and reply then.</li>
-<li>If <code>_PULSE_CODE_UNBLOCK</code> arrives for the held <code>rcvid</code> first, release the client with <code>MsgError()</code>.</li>
+<li><strong>Keep the request as a deferred reply.</strong> Save the <code>rcvid</code> and go straight back to <code>MsgReceive()</code>. Nothing forces a server to reply before it receives the next message.</li>
+<li><strong>Reply later, from a timer.</strong> A one-shot timer sends the server a pulse when the answer is due.</li>
+<li><strong>Answer the unblock pulse.</strong> If <code>_PULSE_CODE_UNBLOCK</code> arrives for the held <code>rcvid</code> first, cancel the timer and release the client with <code>MsgError()</code>.</li>
 </ol>
-<p>The unblock pulse's value is the <code>rcvid</code> of the client that wants to leave. On QNX 8.0 <code>rcvid_t</code> is 64-bit, so read it from <code>sival_long</code>:</p>
-<pre><code language="language-c" class="language-c">case _PULSE_CODE_UNBLOCK: {
-    rcvid_t who = (rcvid_t)msg.pulse.value.sival_long;
-    if (who == held) {
-        timer_settime(reply_timer, 0, &amp;off, NULL);   /* cancel the pending reply */
-        MsgError(held, ETIMEDOUT);                   /* this is what frees the client */
-        held = 0;
-    }
-    break;
-}
-case PULSE_REPLY_DUE:                                /* our one-shot timer */
-    if (held) { MsgReply(held, EOK, &amp;held_reply, sizeof(held_reply)); held = 0; }
-    break;</code></pre>
-<p>and when a request comes in:</p>
-<pre><code language="language-c" class="language-c">held = rcvid;
-held_reply = r;
-struct itimerspec its = { 0 };
-its.it_value.tv_sec = delay_ms / 1000;               /* set fields by name: the member */
-its.it_value.tv_nsec = (delay_ms % 1000) * 1000000L; /* order isn&#x27;t fixed by POSIX */
-timer_settime(reply_timer, 0, &amp;its, NULL);</code></pre>
-<p>The timer was created once at startup with <code>SIGEV_PULSE_INIT</code> aimed at the server's own channel, so its pulse arrives through the same <code>MsgReceive()</code> as everything else. The whole server is in <a href="https://github.com/zuhairhalawa/faultline/blob/master/codelab/server.c" target="_blank"><code>server.c</code></a>.</p>
-<aside class="special"><p>The server can't tell whether the client gave up because of a timeout or a signal. This codelab answers <code>ETIMEDOUT</code> because its clients use timeouts; a server whose clients are interrupted by signals would usually answer <code>EINTR</code>.</p></aside>
-<h2 is-upgraded>Run the fixed server</h2>
-<pre><code language="language-bash" class="language-bash">./cl-server -d 30 -u &amp; SP=$!
+<p class="image-container"><img alt="The fixed server: a deferred reply, and MsgError() when the client gives up" src="img/unblock-fixed.svg" style="max-width: 100%"></p>
+<h2 is-upgraded>The exercise</h2>
+<p>Open <code>server-todo.c</code> on your host. It's the whole server, with two gaps marked <code>TODO 1</code> and <code>TODO 2</code>. Everything else is in place: the timer <code>reply_timer</code> is created at startup with <code>SIGEV_PULSE_INIT</code> aimed at the server's own channel, so its <code>PULSE_REPLY_DUE</code> pulse arrives through the same <code>MsgReceive()</code> as everything else, and that case already sends the held reply.</p>
+<ul>
+<li><strong>TODO 2</strong>, in the request path: stop sleeping. Keep the request so you can answer it later, and make <code>reply_timer</code> fire once, <code>delay_ms</code> from now.</li>
+<li><strong>TODO 1</strong>, in the <code>_PULSE_CODE_UNBLOCK</code> case: the client you're holding wants to leave. Release it with an error it will recognise as a timeout, and make sure your scheduled reply never goes out.</li>
+</ul>
+<p>Do TODO 2 first. After each TODO, rebuild with <code>make</code>, copy <code>cl-server-todo</code> to the target, and run:</p>
+<pre><code language="language-bash" class="language-bash">./cl-server-todo -d 30 -u &amp; SP=$!; sleep 1
 ./cl-client -n 3</code></pre>
-<pre><code><span class="nocode">server: pid 12144669, name cl-ping, delay 30 ms, fixed (deferred replies, honours unblock)
-client: pid 12156958, timeout 5 ms
-server: client gave up waiting; released it with ETIMEDOUT
-ping  1: Connection timed out after 5.5 ms
-server: client gave up waiting; released it with ETIMEDOUT
-ping  2: Connection timed out after 5.9 ms
-server: client gave up waiting; released it with ETIMEDOUT
-ping  3: Connection timed out after 6.0 ms</span></code></pre>
-<p>The client's 5 ms timeout now works. It fires a little after 5 ms because timers expire on the system clock tick, 1 ms by default. A reply that is late but still inside the timeout is delivered normally:</p>
-<pre><code language="language-bash" class="language-bash">./cl-server -d 3 -u &amp; SP=$!
+<h2 is-upgraded>What you should see at each stage</h2>
+<p><strong>Neither TODO done.</strong> Still the naive server:</p>
+<pre><code><span class="nocode">ping  1: reply after 32.6 ms</span></code></pre>
+<p><strong>Only TODO 2 done.</strong> The server now holds the request and sees the unblock pulse for it (that <code>printf</code> is already in the TODO 1 branch), but nothing releases the client yet, so it still waits for the timer's reply:</p>
+<pre><code><span class="nocode">server: client gave up waiting (TODO 1 decides what happens next)
+ping  1: reply after 31.8 ms</span></code></pre>
+<p><strong>Both done.</strong> The client's timeout works (the server's line is whatever you print in TODO 1):</p>
+<pre><code><span class="nocode">ping  1: Connection timed out after 5.4 ms
+ping  2: Connection timed out after 6.1 ms</span></code></pre>
+<p>It fires a little after 5 ms because timers expire on the system clock tick, 1 ms by default. Finally, check that a reply that is late but still inside the timeout is delivered normally:</p>
+<pre><code language="language-bash" class="language-bash">./cl-server-todo -d 3 -u &amp; SP=$!; sleep 1
 ./cl-client -n 3</code></pre>
-<pre><code><span class="nocode">ping  1: reply after 3.6 ms
+<pre><code><span class="nocode">ping  1: reply after 3.7 ms
 ping  2: reply after 4.1 ms
-ping  3: reply after 3.5 ms</span></code></pre>
+ping  3: reply after 4.3 ms</span></code></pre>
+<h2 is-upgraded>Hints</h2>
+<p>Try without them first. Each one gives away a little more.</p>
+<ul>
+<li><strong>Hint 1 (TODO 2):</strong> the server already has two variables for this, <code>held</code> and <code>held_reply</code>, and the <code>PULSE_REPLY_DUE</code> case reads them. A one-shot timer is a <code>struct itimerspec</code> with only <code>it_value</code> set.</li>
+<li><strong>Hint 2 (TODO 1):</strong> which call lets a server answer a client with an error instead of data? And how do you disarm a timer you already armed?</li>
+<li><strong>Hint 3, the code:</strong> TODO 2 is <code>held = rcvid; held_reply = r;</code>, then <code>struct itimerspec its = { 0 };</code> with <code>its.it_value.tv_sec = delay_ms / 1000;</code> and <code>its.it_value.tv_nsec = (delay_ms % 1000) * 1000000L;</code>, then <code>timer_settime(reply_timer, 0, &amp;its, NULL);</code>. TODO 1 is <code>timer_settime(reply_timer, 0, &amp;off, NULL); MsgError(held, ETIMEDOUT); held = 0;</code>.</li>
+<li><strong>Solution:</strong> the finished server is <a href="https://github.com/zuhairhalawa/faultline/blob/master/codelab/server.c" target="_blank"><code>server.c</code></a>. It's <code>cl-server -u</code>.</li>
+</ul>
+<aside class="special"><p>On a <code>name_attach()</code> channel, a client that timed out and a client that got a signal both arrive as the same <code>_PULSE_CODE_UNBLOCK</code>. This codelab answers <code>ETIMEDOUT</code> because its client uses timeouts; a server whose clients are interrupted by signals would usually answer <code>EINTR</code>. (The QNX 8.0 headers also define <code>_NTO_CHF_UNBLOCK_TIMER</code> and <code>_PULSE_CODE_UNBLOCK_TIMER</code> for channels you create yourself with <code>ChannelCreate()</code>; they aren't covered here.)</p></aside>
       </google-codelab-step>
-      <google-codelab-step label="Protect the client with a worker thread" duration="5">
-<p>The fixed server only helps while it can run. Freeze it and the client is stuck exactly as before: nobody is left to answer the unblock pulse.</p>
+      <google-codelab-step label="Protect the client with a worker thread" duration="6">
+<p>The fixed server only helps while it can run. Freeze it and the client is stuck exactly as in step 5: nobody is left to answer the unblock pulse.</p>
 <p>So a client with a deadline shouldn't call <code>MsgSend()</code> from its time-critical thread, at least not to a server it can't trust to answer. In <code>cl-client -w</code>, a 100 Hz loop at <code>SCHED_FIFO</code> priority 20 hands each request to a worker thread at priority 15 and never waits for it. It uses whatever answers have arrived, and keeps time either way:</p>
 <pre><code language="language-c" class="language-c">clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &amp;next, NULL);
 /* ... measure how late this tick is ... */
 int idle = 0;                                        /* never wait for the server here */
 if (atomic_compare_exchange_strong(&amp;busy, &amp;idle, 1)) sem_post(&amp;go);</code></pre>
+<p class="image-container"><img alt="cl-client -w: the 100 Hz loop keeps time while its worker is stuck on a frozen server" src="img/worker-thread.svg" style="max-width: 100%"></p>
 <p>First, with a healthy server:</p>
-<pre><code language="language-bash" class="language-bash">./cl-server &gt; /dev/null &amp; SP=$!
+<pre><code language="language-bash" class="language-bash">./cl-server &gt; /dev/null &amp; SP=$!; sleep 1
 ./cl-client -w -n 3</code></pre>
 <pre><code><span class="nocode">loop: 100 ms window  1, worst tick 1.03 ms late, 9 answers
 loop: 100 ms window  2, worst tick 0.94 ms late, 10 answers
 loop: 100 ms window  3, worst tick 0.93 ms late, 10 answers</span></code></pre>
-<p>About 1 ms of lateness is the clock tick again: an absolute sleep wakes on the next tick. Now freeze the server 150 ms into the run:</p>
-<pre><code language="language-bash" class="language-bash">./cl-server &gt; /dev/null &amp; SP=$!
+<p>About 1 ms of lateness is the clock tick again: an absolute sleep wakes on the next tick.</p>
+<aside class="special"><p><strong>Predict:</strong> freeze the server 150 ms into the run. What happens to the worst tick, and to the answers?</p></aside>
+<pre><code language="language-bash" class="language-bash">./cl-server &gt; /dev/null &amp; SP=$!; sleep 1
 ./cl-client -w -n 5 &amp; CP=$!
 sleep 0.15; kill -STOP $SP</code></pre>
 <pre><code><span class="nocode">loop: 100 ms window  1, worst tick 1.13 ms late, 9 answers
@@ -186,7 +195,38 @@ loop: 100 ms window  5, worst tick 1.10 ms late, 0 answers</span></code></pre>
 <pre><code language="language-bash" class="language-bash">pidin -p cl-client -F &quot;%a %b %N %p %J %B&quot;</code></pre>
 <pre><code><span class="nocode">     pid tid name               prio STATE          Blocked
 12304414   2 cl-client           15f REPLY          12292125</span></code></pre>
-<p>Its worker thread (tid 2, priority 15 FIFO) is still REPLY-blocked on the frozen server, and as before, even <code>SIGKILL</code> doesn't free it. What does free it is dealing with the server: resume it, or kill it. That's the job of a supervisor that watches heartbeats and kills a server that stops sending them. <a href="https://github.com/zuhairhalawa/faultline" target="_blank">Faultline</a> does exactly that with its <code>fl-supervisor</code>.</p>
+<p>Look at the server too, with <code>pidin -p cl-server -F &quot;%a %b %N %p %J %B&quot;</code>:</p>
+<pre><code><span class="nocode">     pid tid name               prio STATE          Blocked
+17481757   1 cl-server           15r STOPPED</span></code></pre>
+<p>It started at the default priority 10, but it shows 15: when its thread received the worker's message, QNX gave it the sender's priority. That's priority inheritance through message passing, and here the server is stuck at the borrowed priority.</p>
+<p>The worker thread (tid 2, priority 15 FIFO) is still REPLY-blocked on the frozen server, and as in step 5, even <code>SIGKILL</code> doesn't free it. What does free it is dealing with the server: resume it, or kill it. That's the job of a supervisor that watches heartbeats and kills a server that stops sending them. <a href="https://github.com/zuhairhalawa/faultline" target="_blank">Faultline</a> does exactly that with its <code>fl-supervisor</code>.</p>
+      </google-codelab-step>
+      <google-codelab-step label="Common mistakes" duration="3">
+<ul>
+<li><strong>Sleeping, or blocking on anything slow, while holding a request.</strong> The unblock pulse then waits behind your work, as in step 4. Defer the reply instead.</li>
+<li>**Reading the rcvid from <code>sival_int</code>.** <code>rcvid_t</code> is 64-bit on QNX 8.0, so compare with <code>(rcvid_t)msg.pulse.value.sival_long</code>.</li>
+<li>**Initialising <code>struct itimerspec</code> by position.** POSIX doesn't fix the order of its members. The first version of this codelab's server wrote <code>{ { 0, 0 }, { sec, nsec } }</code>, meaning interval then value; on QNX 8.0 that left <code>it_value</code> at zero, which disarms the timer, so no held reply was ever sent. Set <code>its.it_value.tv_sec</code> and <code>.tv_nsec</code> by name.</li>
+<li><strong>Trusting a timeout in a control loop.</strong> It only works if the server answers the unblock pulse. Keep <code>MsgSend()</code> out of the time-critical thread.</li>
+<li><strong>Trying to unstick a client by killing it.</strong> A client REPLY-blocked on a frozen <code>_NTO_CHF_UNBLOCK</code> server survived <code>SIGKILL</code> in our runs. Deal with the server.</li>
+</ul>
+      </google-codelab-step>
+      <google-codelab-step label="Check your understanding" duration="4">
+<p>Answer these without scrolling back. The answers are below.</p>
+<ol type="1">
+<li>A client's <code>MsgSend()</code> has a 5 ms <code>TimerTimeout()</code> for SEND and REPLY. The single-threaded <code>name_attach()</code> server receives the message at once, then sleeps 20 ms before replying. How long does the client wait?</li>
+<li>Same server, but it uses deferred replies and answers <code>_PULSE_CODE_UNBLOCK</code> with <code>MsgError(rcvid, ETIMEDOUT)</code>. How long now, and what does <code>MsgSend()</code> return?</li>
+<li>Why doesn't the kernel just release the client when the timeout fires?</li>
+<li>A worker thread is REPLY-blocked on a frozen server. Name two things that release it, and one that doesn't.</li>
+<li>Your 100 Hz loop must never be more than 2 ms late, and it needs readings from a server that might freeze. Where should the <code>MsgSend()</code> happen?</li>
+</ol>
+<h2 is-upgraded>Answers</h2>
+<ol type="1">
+<li>About <strong>20 ms</strong>. The client is REPLY-blocked, so the kernel only notifies the server with <code>_PULSE_CODE_UNBLOCK</code>, and this server's only thread is asleep until it has replied.</li>
+<li>About <strong>5 ms</strong> (a little more, on the clock tick). <code>MsgSend()</code> returns -1 with <code>errno</code> set to <code>ETIMEDOUT</code>.</li>
+<li>Because the channel has <code>_NTO_CHF_UNBLOCK</code>, which every <code>name_attach()</code> channel gets. That flag tells the kernel to hand the decision to the server, which may need to clean up work in flight for that client first.</li>
+<li>Killing the server releases it at once (with <code>ESRCH</code>). Resuming the server releases it as soon as the server replies or answers the unblock pulse. Killing the client, even with <code>SIGKILL</code>, didn't in our runs.</li>
+<li>In a lower-priority worker thread. The loop only kicks the worker and uses whatever fresh data has arrived, so a frozen server costs it data, not deadlines.</li>
+</ol>
       </google-codelab-step>
       <google-codelab-step label="Recap and clean up" duration="2">
 <h2 is-upgraded>What you learned</h2>
@@ -197,7 +237,7 @@ loop: 100 ms window  5, worst tick 1.10 ms late, 0 answers</span></code></pre>
 <li><strong>In the system:</strong> a frozen server can't release anyone, not even a client being killed. Detect it with heartbeats and kill it. That fails the request in flight with <code>ESRCH</code>, and the client can reconnect to a restarted server.</li>
 </ul>
 <h2 is-upgraded>Clean up</h2>
-<pre><code language="language-bash" class="language-bash">slay -s SIGCONT cl-server; slay -s SIGKILL cl-server cl-client
+<pre><code language="language-bash" class="language-bash">slay -s SIGCONT cl-server cl-server-todo 2&gt;/dev/null; slay -s SIGKILL cl-server cl-server-todo cl-client 2&gt;/dev/null
 rm -rf /data/cl</code></pre>
 <h2 is-upgraded>Learn more</h2>
 <ul>
